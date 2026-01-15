@@ -1,0 +1,288 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --bg-color: #ffffff;
+  --text-color: #1a1a1a;
+  --group-header-bg: #f0f0f0;
+  --hover-bg: #e8e8e8;
+  --border-color: #ddd;
+  --close-btn-color: #666;
+  --close-btn-hover: #cc0000;
+  --active-tab-bg: #e0e7ff;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg-color: #1a1a1a;
+    --text-color: #e8e8e8;
+    --group-header-bg: #2a2a2a;
+    --hover-bg: #333;
+    --border-color: #444;
+    --close-btn-color: #999;
+    --close-btn-hover: #ff4444;
+    --active-tab-bg: #2d3a5a;
+  }
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 13px;
+  background-color: var(--bg-color);
+  color: var(--text-color);
+  overflow-x: hidden;
+}
+
+.sidebar-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-color);
+  position: sticky;
+  top: 0;
+  background-color: var(--bg-color);
+  z-index: 10;
+}
+
+.header-title {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.header-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.header-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: transparent;
+  color: var(--close-btn-color);
+  cursor: pointer;
+  border-radius: 6px;
+}
+
+.header-btn:hover {
+  background-color: var(--hover-bg);
+  color: var(--text-color);
+}
+
+#tab-list {
+  padding: 8px 0;
+}
+
+.tab-group {
+  margin-bottom: 4px;
+}
+
+.group-header {
+  display: flex;
+  align-items: center;
+  padding: 8px 12px;
+  background-color: var(--group-header-bg);
+  cursor: pointer;
+  user-select: none;
+  font-weight: 600;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-left: 4px solid transparent;
+}
+
+.group-header:hover {
+  background-color: var(--hover-bg);
+}
+
+.group-header .collapse-icon {
+  margin-right: 8px;
+  font-size: 10px;
+  transition: transform 0.15s ease;
+  width: 12px;
+}
+
+.group-header.collapsed .collapse-icon {
+  transform: rotate(-90deg);
+}
+
+.group-header .group-name {
+  flex: 1;
+}
+
+.group-header .header-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.group-header .countdown {
+  font-size: 10px;
+  font-weight: normal;
+  padding: 2px 5px;
+  background-color: rgba(255, 150, 0, 0.2);
+  color: #e8710a;
+  border-radius: 3px;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-color-scheme: dark) {
+  .group-header .countdown {
+    background-color: rgba(255, 150, 0, 0.15);
+    color: #ffaa44;
+  }
+}
+
+.group-header .tab-count {
+  font-size: 11px;
+  opacity: 0.7;
+  font-weight: normal;
+}
+
+.group-header .close-group-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border: none;
+  background: transparent;
+  color: var(--close-btn-color);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  border-radius: 3px;
+  visibility: hidden;
+  opacity: 0;
+}
+
+.group-header:hover .close-group-btn {
+  visibility: visible;
+  opacity: 0.7;
+}
+
+.group-header .close-group-btn:hover {
+  opacity: 1;
+  color: var(--close-btn-hover);
+  background-color: rgba(128, 128, 128, 0.2);
+}
+
+.group-tabs {
+  overflow: hidden;
+}
+
+.group-tabs.collapsed {
+  display: none;
+}
+
+.tab-item {
+  display: flex;
+  align-items: center;
+  padding: 6px 12px 6px 8px;
+  cursor: pointer;
+  border-bottom: 1px solid transparent;
+}
+
+.tab-item:hover {
+  background-color: var(--hover-bg);
+}
+
+.tab-item.active {
+  background-color: var(--active-tab-bg);
+}
+
+.tab-item .close-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  min-width: 16px;
+  margin-right: 6px;
+  border: none;
+  background: transparent;
+  color: var(--close-btn-color);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  border-radius: 3px;
+  opacity: 0.6;
+}
+
+.tab-item .close-btn:hover {
+  opacity: 1;
+  color: var(--close-btn-hover);
+  background-color: rgba(128, 128, 128, 0.2);
+}
+
+.tab-item .favicon {
+  width: 16px;
+  height: 16px;
+  min-width: 16px;
+  margin-right: 8px;
+  object-fit: contain;
+}
+
+.tab-item .favicon.placeholder {
+  background-color: var(--border-color);
+  border-radius: 2px;
+}
+
+.tab-item .tab-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Drag and drop styles */
+.tab-group.dragging {
+  opacity: 0.5;
+}
+
+.tab-group.drag-over {
+  border-top: 2px solid var(--primary-color, #6366f1);
+}
+
+.tab-item.dragging {
+  opacity: 0.5;
+}
+
+.tab-item.drag-over {
+  border-top: 2px solid var(--primary-color, #6366f1);
+  margin-top: -2px;
+}
+
+.group-tabs.drag-over-empty {
+  background-color: var(--hover-bg);
+  min-height: 30px;
+}
+
+/* Drag handle cursor */
+.tab-group .group-header {
+  cursor: grab;
+}
+
+.tab-group .group-header:active {
+  cursor: grabbing;
+}
+
+.tab-item {
+  cursor: grab;
+}
+
+.tab-item:active {
+  cursor: grabbing;
+}
+
+/* Primary color variable for drag indicator */
+:root {
+  --primary-color: #6366f1;
+}

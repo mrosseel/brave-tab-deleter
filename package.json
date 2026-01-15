@@ -1,0 +1,17 @@
+{
+  "name": "tab-deleter",
+  "version": "1.0.0",
+  "description": "Manage tabs from a sidebar panel with auto-grouping, custom groups, and drag-and-drop organization.",
+  "type": "module",
+  "scripts": {
+    "build": "node build.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "package": "node scripts/package.js"
+  },
+  "devDependencies": {
+    "archiver": "^7.0.0",
+    "esbuild": "^0.24.0",
+    "vitest": "^2.1.0"
+  }
+}

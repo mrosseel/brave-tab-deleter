@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tab Deleter</title>
+  <link rel="stylesheet" href="sidebar.css">
+</head>
+<body>
+  <header class="sidebar-header">
+    <span class="header-title">Tabs</span>
+    <div class="header-actions">
+      <button class="header-btn" id="refresh-btn" title="Refresh">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M23 4v6h-6M1 20v-6h6"></path>
+          <path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"></path>
+        </svg>
+      </button>
+      <button class="header-btn" id="collapse-all-btn" title="Collapse all groups">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M18 15l-6-6-6 6"></path>
+        </svg>
+      </button>
+      <button class="header-btn" id="expand-all-btn" title="Expand all groups">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M6 9l6 6 6-6"></path>
+        </svg>
+      </button>
+      <button class="header-btn" id="settings-btn" title="Settings">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="3"></circle>
+          <path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"></path>
+        </svg>
+      </button>
+    </div>
+  </header>
+  <div id="tab-list"></div>
+  <script src="dist/sidebar.js"></script>
+</body>
+</html>

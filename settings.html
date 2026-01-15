@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tab Deleter Settings</title>
+  <link rel="stylesheet" href="settings.css">
+</head>
+<body>
+  <div class="settings-container">
+    <header class="settings-header">
+      <button class="back-btn" id="back-btn">&larr;</button>
+      <h1>Settings</h1>
+    </header>
+
+    <div class="settings-list">
+      <!-- Auto Grouping -->
+      <div class="setting-item">
+        <div class="setting-info">
+          <h2>Auto Grouping</h2>
+          <p>Automatically move tabs with the same source domain into the same tab group.</p>
+        </div>
+        <div class="setting-controls">
+          <button class="apply-btn" id="apply-auto-grouping" title="Apply to existing tabs">Apply Now</button>
+          <label class="toggle">
+            <input type="checkbox" id="auto-grouping">
+            <span class="slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Auto Ordering -->
+      <div class="setting-item">
+        <div class="setting-info">
+          <h2>Auto Ordering</h2>
+          <p>Automatically push the last visited tab that is active for at least
+            <input type="number" id="auto-ordering-seconds" min="1" max="60" value="5">
+            seconds to the first position of the group.</p>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" id="auto-ordering">
+          <span class="slider"></span>
+        </label>
+      </div>
+
+      <!-- Customised Grouping -->
+      <div class="setting-item">
+        <div class="setting-info">
+          <h2>Customised Grouping</h2>
+          <p>Automatically group tabs into user created groups.</p>
+        </div>
+        <div class="setting-controls">
+          <button class="add-group-btn" id="add-group-btn">+</button>
+          <label class="toggle">
+            <input type="checkbox" id="custom-grouping">
+            <span class="slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Custom Groups List -->
+      <div class="custom-groups-container" id="custom-groups-container">
+        <!-- Groups will be rendered here -->
+      </div>
+    </div>
+  </div>
+
+  <!-- Edit Group Modal -->
+  <div class="modal-overlay" id="modal-overlay">
+    <div class="modal">
+      <h2 id="modal-title">Add Group</h2>
+      <div class="form-group">
+        <label for="group-name">Group Name</label>
+        <input type="text" id="group-name" placeholder="e.g., Work, Social, News">
+      </div>
+      <div class="form-group">
+        <label for="group-color">Color</label>
+        <div class="color-picker" id="color-picker">
+          <button class="color-option" data-color="grey"></button>
+          <button class="color-option" data-color="blue"></button>
+          <button class="color-option" data-color="red"></button>
+          <button class="color-option" data-color="yellow"></button>
+          <button class="color-option" data-color="green"></button>
+          <button class="color-option" data-color="pink"></button>
+          <button class="color-option" data-color="purple"></button>
+          <button class="color-option" data-color="cyan"></button>
+          <button class="color-option" data-color="orange"></button>
+        </div>
+      </div>
+      <div class="form-group">
+        <label for="group-domains">Domains (one per line)</label>
+        <textarea id="group-domains" rows="5" placeholder="example.com&#10;subdomain.example.com"></textarea>
+      </div>
+      <div class="modal-buttons">
+        <button class="btn btn-cancel" id="modal-cancel">Cancel</button>
+        <button class="btn btn-save" id="modal-save">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="dist/settings.js"></script>
+</body>
+</html>
