@@ -1,10 +1,4 @@
-import { getColorHex, getGroupColor } from './lib/colors.js';
-import {
-  GHOST_GROUP_SECONDS,
-  createGhostEntry,
-  isGhostExpired,
-  getGhostRemainingSeconds
-} from './lib/ghost.js';
+import { getColorHex } from './shared.js';
 
 const tabListEl = document.getElementById('tab-list');
 const settingsBtn = document.getElementById('settings-btn');
@@ -23,35 +17,38 @@ refreshBtn.addEventListener('click', () => {
 });
 
 // Collapse all groups
-collapseAllBtn.addEventListener('click', () => {
-  document.querySelectorAll('.tab-group').forEach(group => {
-    const groupId = group.dataset.groupId;
-    collapsedGroups.add(groupId);
-    group.querySelector('.group-header')?.classList.add('collapsed');
-    group.querySelector('.group-tabs')?.classList.add('collapsed');
-  });
+collapseAllBtn.addEventListener('click', async () => {
+  const groups = await chrome.tabGroups.query({ windowId: chrome.windows.WINDOW_ID_CURRENT });
+  for (const group of groups) {
+    if (!group.collapsed) {
+      await chrome.tabGroups.update(group.id, { collapsed: true });
+    }
+  }
 });
 
 // Expand all groups
-expandAllBtn.addEventListener('click', () => {
-  collapsedGroups.clear();
-  document.querySelectorAll('.tab-group').forEach(group => {
-    group.querySelector('.group-header')?.classList.remove('collapsed');
-    group.querySelector('.group-tabs')?.classList.remove('collapsed');
-  });
+expandAllBtn.addEventListener('click', async () => {
+  const groups = await chrome.tabGroups.query({ windowId: chrome.windows.WINDOW_ID_CURRENT });
+  for (const group of groups) {
+    if (group.collapsed) {
+      await chrome.tabGroups.update(group.id, { collapsed: false });
+    }
+  }
 });
-
-let collapsedGroups = new Set();
 
 // Drag and drop state
 let draggedTab = null;
 let draggedGroup = null;
+
+// Local collapse state for "Other" section (not a real Chrome group)
+let otherCollapsed = false;
 
 // Ghost groups: tabs that should appear in a fake group visually
 // (either ungrouped by Chrome or moved to different group by Brave)
 // tabId -> { title, color, expiresAt, originalGroupId, positionIndex }
 // Persisted to chrome.storage.session to survive sidebar reloads
 let ghostGroups = new Map();
+const GHOST_GROUP_SECONDS = 15;
 
 // Load ghost groups from chrome.storage.session
 async function loadGhostGroups() {
@@ -78,7 +75,7 @@ async function saveGhostGroups() {
 let renderCount = 0;
 let renderTimeout = null;
 
-// Debounced render - waits 50ms after last call to actually render
+// Debounced render - waits 100ms after last call to reduce flicker during group recovery
 function debouncedRender(source) {
   if (renderTimeout) {
     clearTimeout(renderTimeout);
@@ -86,11 +83,8 @@ function debouncedRender(source) {
   renderTimeout = setTimeout(() => {
     renderTimeout = null;
     render(source);
-  }, 50);
+  }, 100);
 }
-
-// Track last known group count to detect bad API responses
-let lastKnownGroupCount = 0;
 
 async function loadTabs() {
   const tabs = await chrome.tabs.query({ currentWindow: true });
@@ -102,18 +96,6 @@ async function loadTabs() {
     groupMap.set(group.id, group);
   });
 
-  // Count tabs that claim to be in groups
-  const tabsInGroups = tabs.filter(t => t.groupId !== -1);
-  const currentGroupCount = new Set(tabsInGroups.map(t => t.groupId)).size;
-
-  // Detect bad data: had groups before, now suddenly 0
-  const isBadData = lastKnownGroupCount > 0 && currentGroupCount === 0;
-
-  // Update count only with good data
-  if (currentGroupCount > 0) {
-    lastKnownGroupCount = currentGroupCount;
-  }
-
   const groupedTabs = new Map();
   const ungroupedTabs = [];
   const ghostTabs = []; // Tabs that should appear in ghost groups
@@ -123,7 +105,7 @@ async function loadTabs() {
   const now = Date.now();
   let expired = false;
   for (const [tabId, ghost] of ghostGroups.entries()) {
-    if (isGhostExpired(ghost, now)) {
+    if (now >= ghost.expiresAt) {
       ghostGroups.delete(tabId);
       expired = true;
     }
@@ -153,7 +135,12 @@ async function loadTabs() {
     }
   }
 
-  return { groupedTabs, ungroupedTabs, ghostTabs, groupMap, groupOrder, isBadData };
+  return { groupedTabs, ungroupedTabs, ghostTabs, groupMap, groupOrder, windowId };
+}
+
+// Use getColorHex from shared.js
+function getGroupColor(group) {
+  return getColorHex(group.color);
 }
 
 function createTabElement(tab, groupInfo, onClose) {
@@ -200,10 +187,22 @@ function createTabElement(tab, groupInfo, onClose) {
     if (draggedTab && draggedTab.tabId !== tab.id) {
       const draggedTabId = draggedTab.tabId; // Capture before async
       try {
+        // Get dragged tab info BEFORE moving (to preserve group)
+        const draggedTabInfo = await chrome.tabs.get(draggedTabId);
+        const originalGroupId = draggedTabInfo.groupId;
+
         // Get target tab info to find its index
         const targetTab = await chrome.tabs.get(tab.id);
         // Move dragged tab to target position
         await chrome.tabs.move(draggedTabId, { index: targetTab.index });
+
+        // Re-group the tab if it was in a group (move can ungroup it)
+        if (originalGroupId !== -1) {
+          await chrome.tabs.group({ tabIds: draggedTabId, groupId: originalGroupId });
+        }
+
+        // Force re-render to ensure sidebar syncs with browser
+        render('tab-drop-reorder');
       } catch (err) {
         console.error('Failed to move tab:', err);
       }
@@ -222,7 +221,9 @@ function createTabElement(tab, groupInfo, onClose) {
       onClose();
     }
 
+    console.log('[sidebar] Closing tab:', tab.id, 'groupId:', tab.groupId);
     await chrome.tabs.remove(tab.id);
+    console.log('[sidebar] Tab removed');
     window.scrollTo(0, scrollTop);
   });
 
@@ -320,6 +321,10 @@ function createGroupElement(groupId, groupInfo, tabs, isUngrouped = false, isGho
               const targetIndex = Math.min(...targetGroupTabs.map(t => t.index));
               const tabIds = draggedGroupTabs.map(t => t.id);
               await chrome.tabs.move(tabIds, { index: targetIndex });
+              // Re-group tabs (move can ungroup them)
+              await chrome.tabs.group({ tabIds, groupId: draggedGroupId });
+              // Force re-render to ensure sidebar syncs with browser
+              render('group-reorder');
             }
           }
         } catch (err) {
@@ -332,6 +337,8 @@ function createGroupElement(groupId, groupInfo, tabs, isUngrouped = false, isGho
         try {
           // Add tab to this group
           await chrome.tabs.group({ tabIds: draggedTabId, groupId: groupInfo.id });
+          // Force re-render to ensure sidebar syncs with browser
+          render('tab-drop-to-group');
         } catch (err) {
           console.error('Failed to move tab to group:', err);
         }
@@ -339,8 +346,9 @@ function createGroupElement(groupId, groupInfo, tabs, isUngrouped = false, isGho
     });
   }
 
+  const isCollapsed = groupInfo?.collapsed || false;
   const header = document.createElement('div');
-  header.className = 'group-header' + (collapsedGroups.has(groupId) ? ' collapsed' : '');
+  header.className = 'group-header' + (isCollapsed ? ' collapsed' : '');
 
   if (isGhost && groupInfo) {
     header.style.borderLeftColor = getColorHex(groupInfo.color);
@@ -365,11 +373,11 @@ function createGroupElement(groupId, groupInfo, tabs, isUngrouped = false, isGho
 
   // Show countdown for ghost groups
   if (isGhost && ghostExpiresAt) {
-    const remainingSeconds = getGhostRemainingSeconds({ expiresAt: ghostExpiresAt });
+    const remainingSeconds = Math.max(0, Math.ceil((ghostExpiresAt - Date.now()) / 1000));
     const countdownEl = document.createElement('span');
     countdownEl.className = 'countdown';
     countdownEl.textContent = `${remainingSeconds}s`;
-    countdownEl.title = 'Tab will move to Ungrouped when timer expires';
+    countdownEl.title = 'Tab will move to Other when timer expires';
     rightSection.appendChild(countdownEl);
   }
 
@@ -402,7 +410,7 @@ function createGroupElement(groupId, groupInfo, tabs, isUngrouped = false, isGho
   header.appendChild(rightSection);
 
   const tabsContainer = document.createElement('div');
-  tabsContainer.className = 'group-tabs' + (collapsedGroups.has(groupId) ? ' collapsed' : '');
+  tabsContainer.className = 'group-tabs' + (isCollapsed ? ' collapsed' : '');
 
   // Allow dropping tabs into the group's tab container
   tabsContainer.addEventListener('dragover', (e) => {
@@ -432,6 +440,8 @@ function createGroupElement(groupId, groupInfo, tabs, isUngrouped = false, isGho
           // Add to this group
           await chrome.tabs.group({ tabIds: draggedTabId, groupId: groupInfo.id });
         }
+        // Force re-render to ensure sidebar syncs with browser
+        render('tabs-container-drop');
       } catch (err) {
         console.error('Failed to move tab:', err);
       }
@@ -446,7 +456,13 @@ function createGroupElement(groupId, groupInfo, tabs, isUngrouped = false, isGho
       const otherTab = tabs.find(t => t.id !== tab.id);
       if (otherTab) {
         onClose = () => {
-          ghostGroups.set(otherTab.id, createGhostEntry(groupInfo, positionIndex));
+          ghostGroups.set(otherTab.id, {
+            title: groupInfo.title || '',
+            color: groupInfo.color,
+            originalGroupId: groupInfo.id,
+            positionIndex: positionIndex,
+            expiresAt: Date.now() + (GHOST_GROUP_SECONDS * 1000)
+          });
           saveGhostGroups();
         };
       }
@@ -455,18 +471,29 @@ function createGroupElement(groupId, groupInfo, tabs, isUngrouped = false, isGho
     tabsContainer.appendChild(createTabElement(tab, isGhost ? groupInfo : null, onClose));
   });
 
-  header.addEventListener('click', (e) => {
+  header.addEventListener('click', async (e) => {
     // Don't toggle if clicking the close button
     if (e.target.closest('.close-group-btn')) return;
 
-    const isCollapsed = collapsedGroups.has(groupId);
-    if (isCollapsed) {
-      collapsedGroups.delete(groupId);
-    } else {
-      collapsedGroups.add(groupId);
+    if (isUngrouped) {
+      // Toggle local collapse state for "Other" section
+      otherCollapsed = !otherCollapsed;
+      header.classList.toggle('collapsed', otherCollapsed);
+      tabsContainer.classList.toggle('collapsed', otherCollapsed);
+    } else if (groupInfo && groupInfo.id) {
+      // For real groups, toggle collapse state via Chrome API
+      try {
+        // Get current state from Chrome (not cached groupInfo)
+        const currentGroups = await chrome.tabGroups.query({ });
+        const currentGroup = currentGroups.find(g => g.id === groupInfo.id);
+        if (currentGroup) {
+          await chrome.tabGroups.update(groupInfo.id, { collapsed: !currentGroup.collapsed });
+        }
+        // The onUpdated event will trigger a re-render
+      } catch (err) {
+        console.error('Failed to toggle collapse:', err);
+      }
     }
-    header.classList.toggle('collapsed');
-    tabsContainer.classList.toggle('collapsed');
   });
 
   container.appendChild(header);
@@ -475,47 +502,41 @@ function createGroupElement(groupId, groupInfo, tabs, isUngrouped = false, isGho
   return container;
 }
 
-let retryTimeout = null;
-
 async function render(source = 'unknown') {
   renderCount++;
   const scrollTop = document.documentElement.scrollTop || document.body.scrollTop;
 
-  const { groupedTabs, ungroupedTabs, ghostTabs, groupMap, groupOrder, isBadData } = await loadTabs();
-
-  // If bad data detected, skip this render and retry shortly
-  if (isBadData) {
-    console.log(`[${source}] Bad data detected, scheduling retry...`);
-    if (retryTimeout) clearTimeout(retryTimeout);
-    retryTimeout = setTimeout(() => {
-      retryTimeout = null;
-      render('retry');
-    }, 100);
-    return;
-  }
+  const { groupedTabs, ungroupedTabs, ghostTabs, groupMap, groupOrder, firstTabIndex } = await loadTabs();
 
   tabListEl.innerHTML = '';
 
-  // Render ungrouped tabs first
-  if (ungroupedTabs.length > 0) {
-    tabListEl.appendChild(createGroupElement('ungrouped', null, ungroupedTabs, true, false, null, -1));
-  }
-
-  // Build combined list of real groups and ghost groups with positions
+  // Build combined list of all items with their first tab index for ordering
   const renderItems = [];
 
-  // Add real groups with their current position
-  groupOrder.forEach((groupId, index) => {
+  // Add real groups with position based on first tab index
+  groupOrder.forEach((groupId) => {
+    const tabs = groupedTabs.get(groupId);
+    const firstIndex = tabs.length > 0 ? Math.min(...tabs.map(t => t.index)) : Infinity;
     renderItems.push({
       type: 'real',
       groupId,
-      tabs: groupedTabs.get(groupId),
+      tabs,
       groupInfo: groupMap.get(groupId),
-      positionIndex: index
+      firstTabIndex: firstIndex
     });
   });
 
-  // Add ghost groups at their original positions
+  // Add "Other" (ungrouped) with position based on first ungrouped tab
+  if (ungroupedTabs.length > 0) {
+    const firstIndex = Math.min(...ungroupedTabs.map(t => t.index));
+    renderItems.push({
+      type: 'ungrouped',
+      tabs: ungroupedTabs,
+      firstTabIndex: firstIndex
+    });
+  }
+
+  // Add ghost groups
   for (const tab of ghostTabs) {
     const ghost = ghostGroups.get(tab.id);
     if (ghost) {
@@ -523,22 +544,13 @@ async function render(source = 'unknown') {
         type: 'ghost',
         tab,
         ghost,
-        positionIndex: ghost.positionIndex ?? renderItems.length // fallback to end if no position
+        firstTabIndex: tab.index
       });
     }
   }
 
-  // Sort by position index to maintain order
-  // When positions are equal, ghosts come first (they represent the original group at that position)
-  renderItems.sort((a, b) => {
-    if (a.positionIndex !== b.positionIndex) {
-      return a.positionIndex - b.positionIndex;
-    }
-    // Ghost takes priority at its original position
-    if (a.type === 'ghost' && b.type !== 'ghost') return -1;
-    if (a.type !== 'ghost' && b.type === 'ghost') return 1;
-    return 0;
-  });
+  // Sort by first tab index to match tab bar order
+  renderItems.sort((a, b) => a.firstTabIndex - b.firstTabIndex);
 
   // Render in sorted order
   renderItems.forEach((item, index) => {
@@ -550,7 +562,17 @@ async function render(source = 'unknown') {
         false,
         false,
         null,
-        index // Use current render position for future ghosts
+        index
+      ));
+    } else if (item.type === 'ungrouped') {
+      tabListEl.appendChild(createGroupElement(
+        'ungrouped',
+        { title: 'Other', color: 'grey', collapsed: otherCollapsed },
+        item.tabs,
+        true,
+        false,
+        null,
+        index
       ));
     } else {
       const ghostId = `ghost-${item.tab.id}`;
@@ -562,7 +584,7 @@ async function render(source = 'unknown') {
         false,
         true,
         item.ghost.expiresAt,
-        item.positionIndex
+        index
       ));
     }
   });
@@ -570,9 +592,13 @@ async function render(source = 'unknown') {
   window.scrollTo(0, scrollTop);
 }
 
-// Initialize: load ghost groups then render
+// Initialize: load ghost groups, trigger auto-grouping, then render
 (async () => {
   await loadGhostGroups();
+  // Notify background to apply auto-grouping (if enabled)
+  chrome.runtime.sendMessage({ type: 'sidebarOpened' });
+  // Small delay to let grouping complete before render
+  await new Promise(r => setTimeout(r, 100));
   render('initial');
 })();
 

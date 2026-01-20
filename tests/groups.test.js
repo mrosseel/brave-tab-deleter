@@ -28,10 +28,25 @@ describe('findCustomGroupForDomain', () => {
     expect(findCustomGroupForDomain('google.com', customGroups, true)).toEqual(customGroups[2]);
   });
 
-  it('matches subdomains', () => {
+  it('matches subdomains when pattern is base domain', () => {
     expect(findCustomGroupForDomain('mail.google.com', customGroups, true)).toEqual(customGroups[2]);
     expect(findCustomGroupForDomain('docs.google.com', customGroups, true)).toEqual(customGroups[2]);
     expect(findCustomGroupForDomain('api.github.com', customGroups, true)).toEqual(customGroups[0]);
+  });
+
+  it('matches exact subdomain patterns', () => {
+    // Bug: if user specifies mail.google.com as pattern, it should match mail.google.com hostname
+    const groupsWithSubdomainPatterns = [
+      { id: '1', name: 'Base', color: 'blue', domains: ['mail.google.com', 'ha.miker.be'] },
+      { id: '2', name: 'Google', color: 'red', domains: ['google.com'] },
+    ];
+    // Exact match for subdomain pattern
+    expect(findCustomGroupForDomain('mail.google.com', groupsWithSubdomainPatterns, true)).toEqual(groupsWithSubdomainPatterns[0]);
+    expect(findCustomGroupForDomain('ha.miker.be', groupsWithSubdomainPatterns, true)).toEqual(groupsWithSubdomainPatterns[0]);
+    // Regular google.com should match second group, not first
+    expect(findCustomGroupForDomain('google.com', groupsWithSubdomainPatterns, true)).toEqual(groupsWithSubdomainPatterns[1]);
+    // docs.google.com should match google.com pattern (second group)
+    expect(findCustomGroupForDomain('docs.google.com', groupsWithSubdomainPatterns, true)).toEqual(groupsWithSubdomainPatterns[1]);
   });
 
   it('returns null for non-matching domains', () => {

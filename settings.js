@@ -1,5 +1,4 @@
-import { getColorHex } from './lib/colors.js';
-import { getDomain, getShortName } from './lib/domain.js';
+import { getColorHex, escapeHtml } from './shared.js';
 
 // Default settings
 const DEFAULT_SETTINGS = {
@@ -17,7 +16,6 @@ let selectedColor = 'blue';
 // DOM Elements
 const backBtn = document.getElementById('back-btn');
 const autoGroupingToggle = document.getElementById('auto-grouping');
-const applyAutoGroupingBtn = document.getElementById('apply-auto-grouping');
 const autoOrderingToggle = document.getElementById('auto-ordering');
 const autoOrderingSeconds = document.getElementById('auto-ordering-seconds');
 const customGroupingToggle = document.getElementById('custom-grouping');
@@ -97,11 +95,7 @@ function renderCustomGroups() {
   });
 }
 
-function escapeHtml(text) {
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
-}
+// getColorHex and escapeHtml are imported from shared.js
 
 // Modal functions
 function openModal(title, group = null) {
@@ -203,57 +197,9 @@ backBtn.addEventListener('click', () => {
 autoGroupingToggle.addEventListener('change', () => {
   settings.autoGrouping = autoGroupingToggle.checked;
   saveSettings();
-});
-
-// Apply auto-grouping to all existing tabs
-applyAutoGroupingBtn.addEventListener('click', async () => {
-  applyAutoGroupingBtn.textContent = 'Applying...';
-  applyAutoGroupingBtn.disabled = true;
-
-  try {
-    // Get all tabs in current window
-    const tabs = await chrome.tabs.query({ currentWindow: true });
-
-    // Group tabs by domain
-    const domainMap = new Map(); // domain -> [tabIds]
-
-    for (const tab of tabs) {
-      if (tab.groupId !== -1) continue; // Skip already grouped
-      if (!tab.url || tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://')) continue;
-
-      const domain = getDomain(tab.url);
-      if (!domain) continue;
-
-      if (!domainMap.has(domain)) {
-        domainMap.set(domain, []);
-      }
-      domainMap.get(domain).push(tab.id);
-    }
-
-    // Create groups for domains with 2+ tabs
-    for (const [domain, tabIds] of domainMap.entries()) {
-      if (tabIds.length >= 2) {
-        const groupId = await chrome.tabs.group({ tabIds });
-        const displayName = getShortName(domain);
-        await chrome.tabGroups.update(groupId, {
-          title: displayName,
-          color: 'blue'
-        });
-      }
-    }
-
-    applyAutoGroupingBtn.textContent = 'Done!';
-    setTimeout(() => {
-      applyAutoGroupingBtn.textContent = 'Apply Now';
-      applyAutoGroupingBtn.disabled = false;
-    }, 1500);
-  } catch (err) {
-    console.error('Failed to apply auto-grouping:', err);
-    applyAutoGroupingBtn.textContent = 'Error';
-    setTimeout(() => {
-      applyAutoGroupingBtn.textContent = 'Apply Now';
-      applyAutoGroupingBtn.disabled = false;
-    }, 1500);
+  // Apply grouping immediately when enabled
+  if (autoGroupingToggle.checked) {
+    chrome.runtime.sendMessage({ type: 'sidebarOpened' });
   }
 });
 

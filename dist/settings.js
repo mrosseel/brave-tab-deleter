@@ -1,6 +1,6 @@
 (() => {
-  // lib/colors.js
-  var GROUP_COLORS = {
+  // shared.js
+  var TAB_COLORS = {
     grey: "#5f6368",
     blue: "#1a73e8",
     red: "#d93025",
@@ -12,60 +12,12 @@
     orange: "#e8710a"
   };
   function getColorHex(colorName) {
-    return GROUP_COLORS[colorName] || GROUP_COLORS.grey;
+    return TAB_COLORS[colorName] || TAB_COLORS.grey;
   }
-
-  // lib/domain.js
-  var TWO_PART_TLDS = [
-    "co.uk",
-    "com.au",
-    "co.nz",
-    "co.jp",
-    "com.br",
-    "co.kr",
-    "co.in",
-    "org.uk",
-    "net.au",
-    "com.mx"
-  ];
-  function isIPAddress(hostname) {
-    const ipv4Pattern = /^(\d{1,3}\.){3}\d{1,3}$/;
-    const ipv6Pattern = /^([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}$/;
-    return ipv4Pattern.test(hostname) || ipv6Pattern.test(hostname);
-  }
-  function getShortName(domain) {
-    if (isIPAddress(domain)) {
-      return domain;
-    }
-    const parts = domain.split(".");
-    if (parts.length >= 2) {
-      const lastTwo = parts.slice(-2).join(".");
-      if (TWO_PART_TLDS.includes(lastTwo) && parts.length >= 3) {
-        return parts.slice(0, -2).join(".");
-      }
-      return parts.slice(0, -1).join(".");
-    }
-    return domain;
-  }
-  function getDomain(url) {
-    try {
-      const urlObj = new URL(url);
-      const hostname = urlObj.hostname.toLowerCase();
-      if (isIPAddress(hostname)) {
-        return hostname;
-      }
-      const parts = hostname.split(".");
-      if (parts.length <= 2) {
-        return hostname;
-      }
-      const lastTwo = parts.slice(-2).join(".");
-      if (TWO_PART_TLDS.includes(lastTwo)) {
-        return parts.slice(-3).join(".");
-      }
-      return parts.slice(-2).join(".");
-    } catch {
-      return null;
-    }
+  function escapeHtml(text) {
+    const div = document.createElement("div");
+    div.textContent = text;
+    return div.innerHTML;
   }
 
   // settings.js
@@ -81,7 +33,6 @@
   var selectedColor = "blue";
   var backBtn = document.getElementById("back-btn");
   var autoGroupingToggle = document.getElementById("auto-grouping");
-  var applyAutoGroupingBtn = document.getElementById("apply-auto-grouping");
   var autoOrderingToggle = document.getElementById("auto-ordering");
   var autoOrderingSeconds = document.getElementById("auto-ordering-seconds");
   var customGroupingToggle = document.getElementById("custom-grouping");
@@ -146,11 +97,6 @@
         deleteGroup(groupId);
       });
     });
-  }
-  function escapeHtml(text) {
-    const div = document.createElement("div");
-    div.textContent = text;
-    return div.innerHTML;
   }
   function openModal(title, group = null) {
     modalTitle.textContent = title;
@@ -230,45 +176,8 @@
   autoGroupingToggle.addEventListener("change", () => {
     settings.autoGrouping = autoGroupingToggle.checked;
     saveSettings();
-  });
-  applyAutoGroupingBtn.addEventListener("click", async () => {
-    applyAutoGroupingBtn.textContent = "Applying...";
-    applyAutoGroupingBtn.disabled = true;
-    try {
-      const tabs = await chrome.tabs.query({ currentWindow: true });
-      const domainMap = /* @__PURE__ */ new Map();
-      for (const tab of tabs) {
-        if (tab.groupId !== -1) continue;
-        if (!tab.url || tab.url.startsWith("chrome://") || tab.url.startsWith("chrome-extension://")) continue;
-        const domain = getDomain(tab.url);
-        if (!domain) continue;
-        if (!domainMap.has(domain)) {
-          domainMap.set(domain, []);
-        }
-        domainMap.get(domain).push(tab.id);
-      }
-      for (const [domain, tabIds] of domainMap.entries()) {
-        if (tabIds.length >= 2) {
-          const groupId = await chrome.tabs.group({ tabIds });
-          const displayName = getShortName(domain);
-          await chrome.tabGroups.update(groupId, {
-            title: displayName,
-            color: "blue"
-          });
-        }
-      }
-      applyAutoGroupingBtn.textContent = "Done!";
-      setTimeout(() => {
-        applyAutoGroupingBtn.textContent = "Apply Now";
-        applyAutoGroupingBtn.disabled = false;
-      }, 1500);
-    } catch (err) {
-      console.error("Failed to apply auto-grouping:", err);
-      applyAutoGroupingBtn.textContent = "Error";
-      setTimeout(() => {
-        applyAutoGroupingBtn.textContent = "Apply Now";
-        applyAutoGroupingBtn.disabled = false;
-      }, 1500);
+    if (autoGroupingToggle.checked) {
+      chrome.runtime.sendMessage({ type: "sidebarOpened" });
     }
   });
   autoOrderingToggle.addEventListener("change", () => {

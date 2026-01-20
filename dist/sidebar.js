@@ -1,6 +1,6 @@
 (() => {
-  // lib/colors.js
-  var GROUP_COLORS = {
+  // shared.js
+  var TAB_COLORS = {
     grey: "#5f6368",
     blue: "#1a73e8",
     red: "#d93025",
@@ -12,28 +12,7 @@
     orange: "#e8710a"
   };
   function getColorHex(colorName) {
-    return GROUP_COLORS[colorName] || GROUP_COLORS.grey;
-  }
-  function getGroupColor(group) {
-    return GROUP_COLORS[group.color] || GROUP_COLORS.grey;
-  }
-
-  // lib/ghost.js
-  var GHOST_GROUP_SECONDS = 15;
-  function createGhostEntry(groupInfo, positionIndex) {
-    return {
-      title: groupInfo.title || "",
-      color: groupInfo.color,
-      originalGroupId: groupInfo.id,
-      positionIndex,
-      expiresAt: Date.now() + GHOST_GROUP_SECONDS * 1e3
-    };
-  }
-  function isGhostExpired(ghost, now = Date.now()) {
-    return now >= ghost.expiresAt;
-  }
-  function getGhostRemainingSeconds(ghost, now = Date.now()) {
-    return Math.max(0, Math.ceil((ghost.expiresAt - now) / 1e3));
+    return TAB_COLORS[colorName] || TAB_COLORS.grey;
   }
 
   // sidebar.js
@@ -48,25 +27,27 @@
   refreshBtn.addEventListener("click", () => {
     render("manual-refresh");
   });
-  collapseAllBtn.addEventListener("click", () => {
-    document.querySelectorAll(".tab-group").forEach((group) => {
-      const groupId = group.dataset.groupId;
-      collapsedGroups.add(groupId);
-      group.querySelector(".group-header")?.classList.add("collapsed");
-      group.querySelector(".group-tabs")?.classList.add("collapsed");
-    });
+  collapseAllBtn.addEventListener("click", async () => {
+    const groups = await chrome.tabGroups.query({ windowId: chrome.windows.WINDOW_ID_CURRENT });
+    for (const group of groups) {
+      if (!group.collapsed) {
+        await chrome.tabGroups.update(group.id, { collapsed: true });
+      }
+    }
   });
-  expandAllBtn.addEventListener("click", () => {
-    collapsedGroups.clear();
-    document.querySelectorAll(".tab-group").forEach((group) => {
-      group.querySelector(".group-header")?.classList.remove("collapsed");
-      group.querySelector(".group-tabs")?.classList.remove("collapsed");
-    });
+  expandAllBtn.addEventListener("click", async () => {
+    const groups = await chrome.tabGroups.query({ windowId: chrome.windows.WINDOW_ID_CURRENT });
+    for (const group of groups) {
+      if (group.collapsed) {
+        await chrome.tabGroups.update(group.id, { collapsed: false });
+      }
+    }
   });
-  var collapsedGroups = /* @__PURE__ */ new Set();
   var draggedTab = null;
   var draggedGroup = null;
+  var otherCollapsed = false;
   var ghostGroups = /* @__PURE__ */ new Map();
+  var GHOST_GROUP_SECONDS = 15;
   async function loadGhostGroups() {
     try {
       const result = await chrome.storage.session.get("ghostGroups");
@@ -93,9 +74,8 @@
     renderTimeout = setTimeout(() => {
       renderTimeout = null;
       render(source);
-    }, 50);
+    }, 100);
   }
-  var lastKnownGroupCount = 0;
   async function loadTabs() {
     const tabs = await chrome.tabs.query({ currentWindow: true });
     const windowId = tabs.length > 0 ? tabs[0].windowId : chrome.windows.WINDOW_ID_CURRENT;
@@ -104,12 +84,6 @@
     groups.forEach((group) => {
       groupMap.set(group.id, group);
     });
-    const tabsInGroups = tabs.filter((t) => t.groupId !== -1);
-    const currentGroupCount = new Set(tabsInGroups.map((t) => t.groupId)).size;
-    const isBadData = lastKnownGroupCount > 0 && currentGroupCount === 0;
-    if (currentGroupCount > 0) {
-      lastKnownGroupCount = currentGroupCount;
-    }
     const groupedTabs = /* @__PURE__ */ new Map();
     const ungroupedTabs = [];
     const ghostTabs = [];
@@ -117,7 +91,7 @@
     const now = Date.now();
     let expired = false;
     for (const [tabId, ghost] of ghostGroups.entries()) {
-      if (isGhostExpired(ghost, now)) {
+      if (now >= ghost.expiresAt) {
         ghostGroups.delete(tabId);
         expired = true;
       }
@@ -141,7 +115,10 @@
         groupedTabs.get(tab.groupId).push(tab);
       }
     }
-    return { groupedTabs, ungroupedTabs, ghostTabs, groupMap, groupOrder, isBadData };
+    return { groupedTabs, ungroupedTabs, ghostTabs, groupMap, groupOrder, windowId };
+  }
+  function getGroupColor(group) {
+    return getColorHex(group.color);
   }
   function createTabElement(tab, groupInfo, onClose) {
     const div = document.createElement("div");
@@ -178,8 +155,14 @@
       if (draggedTab && draggedTab.tabId !== tab.id) {
         const draggedTabId = draggedTab.tabId;
         try {
+          const draggedTabInfo = await chrome.tabs.get(draggedTabId);
+          const originalGroupId = draggedTabInfo.groupId;
           const targetTab = await chrome.tabs.get(tab.id);
           await chrome.tabs.move(draggedTabId, { index: targetTab.index });
+          if (originalGroupId !== -1) {
+            await chrome.tabs.group({ tabIds: draggedTabId, groupId: originalGroupId });
+          }
+          render("tab-drop-reorder");
         } catch (err) {
           console.error("Failed to move tab:", err);
         }
@@ -195,7 +178,9 @@
       if (onClose) {
         onClose();
       }
+      console.log("[sidebar] Closing tab:", tab.id, "groupId:", tab.groupId);
       await chrome.tabs.remove(tab.id);
+      console.log("[sidebar] Tab removed");
       window.scrollTo(0, scrollTop);
     });
     const favicon = document.createElement("img");
@@ -269,6 +254,8 @@
                 const targetIndex = Math.min(...targetGroupTabs.map((t) => t.index));
                 const tabIds = draggedGroupTabs.map((t) => t.id);
                 await chrome.tabs.move(tabIds, { index: targetIndex });
+                await chrome.tabs.group({ tabIds, groupId: draggedGroupId });
+                render("group-reorder");
               }
             }
           } catch (err) {
@@ -278,14 +265,16 @@
         if (draggedTabId) {
           try {
             await chrome.tabs.group({ tabIds: draggedTabId, groupId: groupInfo.id });
+            render("tab-drop-to-group");
           } catch (err) {
             console.error("Failed to move tab to group:", err);
           }
         }
       });
     }
+    const isCollapsed = groupInfo?.collapsed || false;
     const header = document.createElement("div");
-    header.className = "group-header" + (collapsedGroups.has(groupId) ? " collapsed" : "");
+    header.className = "group-header" + (isCollapsed ? " collapsed" : "");
     if (isGhost && groupInfo) {
       header.style.borderLeftColor = getColorHex(groupInfo.color);
     } else {
@@ -304,11 +293,11 @@
     const rightSection = document.createElement("span");
     rightSection.className = "header-right";
     if (isGhost && ghostExpiresAt) {
-      const remainingSeconds = getGhostRemainingSeconds({ expiresAt: ghostExpiresAt });
+      const remainingSeconds = Math.max(0, Math.ceil((ghostExpiresAt - Date.now()) / 1e3));
       const countdownEl = document.createElement("span");
       countdownEl.className = "countdown";
       countdownEl.textContent = `${remainingSeconds}s`;
-      countdownEl.title = "Tab will move to Ungrouped when timer expires";
+      countdownEl.title = "Tab will move to Other when timer expires";
       rightSection.appendChild(countdownEl);
     }
     if (!isUngrouped) {
@@ -335,7 +324,7 @@
     header.appendChild(groupName);
     header.appendChild(rightSection);
     const tabsContainer = document.createElement("div");
-    tabsContainer.className = "group-tabs" + (collapsedGroups.has(groupId) ? " collapsed" : "");
+    tabsContainer.className = "group-tabs" + (isCollapsed ? " collapsed" : "");
     tabsContainer.addEventListener("dragover", (e) => {
       e.preventDefault();
       if (draggedTab) {
@@ -358,6 +347,7 @@
           } else if (groupInfo && groupInfo.id) {
             await chrome.tabs.group({ tabIds: draggedTabId, groupId: groupInfo.id });
           }
+          render("tabs-container-drop");
         } catch (err) {
           console.error("Failed to move tab:", err);
         }
@@ -369,56 +359,66 @@
         const otherTab = tabs.find((t) => t.id !== tab.id);
         if (otherTab) {
           onClose = () => {
-            ghostGroups.set(otherTab.id, createGhostEntry(groupInfo, positionIndex));
+            ghostGroups.set(otherTab.id, {
+              title: groupInfo.title || "",
+              color: groupInfo.color,
+              originalGroupId: groupInfo.id,
+              positionIndex,
+              expiresAt: Date.now() + GHOST_GROUP_SECONDS * 1e3
+            });
             saveGhostGroups();
           };
         }
       }
       tabsContainer.appendChild(createTabElement(tab, isGhost ? groupInfo : null, onClose));
     });
-    header.addEventListener("click", (e) => {
+    header.addEventListener("click", async (e) => {
       if (e.target.closest(".close-group-btn")) return;
-      const isCollapsed = collapsedGroups.has(groupId);
-      if (isCollapsed) {
-        collapsedGroups.delete(groupId);
-      } else {
-        collapsedGroups.add(groupId);
+      if (isUngrouped) {
+        otherCollapsed = !otherCollapsed;
+        header.classList.toggle("collapsed", otherCollapsed);
+        tabsContainer.classList.toggle("collapsed", otherCollapsed);
+      } else if (groupInfo && groupInfo.id) {
+        try {
+          const currentGroups = await chrome.tabGroups.query({});
+          const currentGroup = currentGroups.find((g) => g.id === groupInfo.id);
+          if (currentGroup) {
+            await chrome.tabGroups.update(groupInfo.id, { collapsed: !currentGroup.collapsed });
+          }
+        } catch (err) {
+          console.error("Failed to toggle collapse:", err);
+        }
       }
-      header.classList.toggle("collapsed");
-      tabsContainer.classList.toggle("collapsed");
     });
     container.appendChild(header);
     container.appendChild(tabsContainer);
     return container;
   }
-  var retryTimeout = null;
   async function render(source = "unknown") {
     renderCount++;
     const scrollTop = document.documentElement.scrollTop || document.body.scrollTop;
-    const { groupedTabs, ungroupedTabs, ghostTabs, groupMap, groupOrder, isBadData } = await loadTabs();
-    if (isBadData) {
-      console.log(`[${source}] Bad data detected, scheduling retry...`);
-      if (retryTimeout) clearTimeout(retryTimeout);
-      retryTimeout = setTimeout(() => {
-        retryTimeout = null;
-        render("retry");
-      }, 100);
-      return;
-    }
+    const { groupedTabs, ungroupedTabs, ghostTabs, groupMap, groupOrder, firstTabIndex } = await loadTabs();
     tabListEl.innerHTML = "";
-    if (ungroupedTabs.length > 0) {
-      tabListEl.appendChild(createGroupElement("ungrouped", null, ungroupedTabs, true, false, null, -1));
-    }
     const renderItems = [];
-    groupOrder.forEach((groupId, index) => {
+    groupOrder.forEach((groupId) => {
+      const tabs = groupedTabs.get(groupId);
+      const firstIndex = tabs.length > 0 ? Math.min(...tabs.map((t) => t.index)) : Infinity;
       renderItems.push({
         type: "real",
         groupId,
-        tabs: groupedTabs.get(groupId),
+        tabs,
         groupInfo: groupMap.get(groupId),
-        positionIndex: index
+        firstTabIndex: firstIndex
       });
     });
+    if (ungroupedTabs.length > 0) {
+      const firstIndex = Math.min(...ungroupedTabs.map((t) => t.index));
+      renderItems.push({
+        type: "ungrouped",
+        tabs: ungroupedTabs,
+        firstTabIndex: firstIndex
+      });
+    }
     for (const tab of ghostTabs) {
       const ghost = ghostGroups.get(tab.id);
       if (ghost) {
@@ -426,19 +426,11 @@
           type: "ghost",
           tab,
           ghost,
-          positionIndex: ghost.positionIndex ?? renderItems.length
-          // fallback to end if no position
+          firstTabIndex: tab.index
         });
       }
     }
-    renderItems.sort((a, b) => {
-      if (a.positionIndex !== b.positionIndex) {
-        return a.positionIndex - b.positionIndex;
-      }
-      if (a.type === "ghost" && b.type !== "ghost") return -1;
-      if (a.type !== "ghost" && b.type === "ghost") return 1;
-      return 0;
-    });
+    renderItems.sort((a, b) => a.firstTabIndex - b.firstTabIndex);
     renderItems.forEach((item, index) => {
       if (item.type === "real") {
         tabListEl.appendChild(createGroupElement(
@@ -449,7 +441,16 @@
           false,
           null,
           index
-          // Use current render position for future ghosts
+        ));
+      } else if (item.type === "ungrouped") {
+        tabListEl.appendChild(createGroupElement(
+          "ungrouped",
+          { title: "Other", color: "grey", collapsed: otherCollapsed },
+          item.tabs,
+          true,
+          false,
+          null,
+          index
         ));
       } else {
         const ghostId = `ghost-${item.tab.id}`;
@@ -461,7 +462,7 @@
           false,
           true,
           item.ghost.expiresAt,
-          item.positionIndex
+          index
         ));
       }
     });
@@ -469,6 +470,8 @@
   }
   (async () => {
     await loadGhostGroups();
+    chrome.runtime.sendMessage({ type: "sidebarOpened" });
+    await new Promise((r) => setTimeout(r, 100));
     render("initial");
   })();
   setInterval(() => {
