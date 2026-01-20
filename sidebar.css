@@ -261,6 +261,14 @@ body {
   margin-top: -2px;
 }
 
+.tab-item.drag-over-above {
+  box-shadow: 0 -2px 0 0 var(--primary-color, #6366f1);
+}
+
+.tab-item.drag-over-below {
+  box-shadow: 0 2px 0 0 var(--primary-color, #6366f1);
+}
+
 .group-tabs.drag-over-empty {
   background-color: var(--hover-bg);
   min-height: 30px;
@@ -286,4 +294,20 @@ body {
 /* Primary color variable for drag indicator */
 :root {
   --primary-color: #6366f1;
+}
+
+/* Dragged tab styling */
+.tab-item.dragging {
+  background-color: var(--primary-color);
+  color: white;
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.4);
+}
+
+.tab-item.dragging .close-btn {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.tab-item.dragging .close-btn:hover {
+  color: white;
 }

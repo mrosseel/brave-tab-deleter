@@ -63,8 +63,45 @@
     return !url || url === "chrome://newtab/" || url === "about:blank" || url.startsWith("chrome://") || url.startsWith("chrome-extension://");
   }
 
+  // lib/lock.js
+  function createLock() {
+    let locked = false;
+    let queue = [];
+    function processQueue() {
+      if (queue.length > 0 && !locked) {
+        locked = true;
+        const next = queue.shift();
+        next().finally(() => {
+          locked = false;
+          processQueue();
+        });
+      }
+    }
+    return async function withLock(fn) {
+      if (locked) {
+        return new Promise((resolve, reject) => {
+          queue.push(async () => {
+            try {
+              const result = await fn();
+              resolve(result);
+            } catch (err) {
+              reject(err);
+            }
+          });
+        });
+      }
+      locked = true;
+      try {
+        return await fn();
+      } finally {
+        locked = false;
+        processQueue();
+      }
+    };
+  }
+
   // background.js
-  console.log("=== BACKGROUND.JS VERSION 2 LOADED ===");
+  console.log("=== BACKGROUND.JS VERSION 3 LOADED ===");
   var sidebarOpen = /* @__PURE__ */ new Map();
   var settings = {
     autoGrouping: false,
@@ -74,48 +111,22 @@
     customGroups: []
   };
   var tabActivationTimes = /* @__PURE__ */ new Map();
-  var groupingLock = false;
-  var groupingQueue = [];
-  async function withGroupingLock(fn) {
-    if (groupingLock) {
-      return new Promise((resolve) => {
-        groupingQueue.push(async () => {
-          const result = await fn();
-          resolve(result);
-        });
-      });
-    }
-    groupingLock = true;
-    try {
-      return await fn();
-    } finally {
-      groupingLock = false;
-      if (groupingQueue.length > 0) {
-        const next = groupingQueue.shift();
-        next();
-      }
-    }
-  }
+  var withGroupingLock = createLock();
   async function loadSettings() {
     const stored = await chrome.storage.sync.get("settings");
-    console.log("Loading settings from storage:", stored);
     if (stored.settings) {
       settings = { ...settings, ...stored.settings };
     }
-    console.log("Settings after load:", settings);
   }
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === "settingsUpdated") {
-      console.log("Received settings update message:", message.settings);
       settings = message.settings;
     } else if (message.type === "sidebarOpened") {
-      console.log("Sidebar opened, applying auto-grouping...");
       withGroupingLock(() => applyAutoGroupingToAll());
     }
   });
   chrome.storage.onChanged.addListener((changes, areaName) => {
     if (areaName === "sync" && changes.settings) {
-      console.log("Storage changed, new settings:", changes.settings.newValue);
       settings = { ...settings, ...changes.settings.newValue };
     }
   });
@@ -204,31 +215,67 @@
   }
   async function applyAutoGroupingToAll() {
     if (!settings.autoGrouping && !settings.customGrouping) return;
-    console.log("applyAutoGroupingToAll: starting...");
     const tabs = await chrome.tabs.query({ currentWindow: true });
     const groups = await chrome.tabGroups.query({ windowId: chrome.windows.WINDOW_ID_CURRENT });
     const otherGroup = groups.find((g) => g.title === "Other" && g.color === "grey");
     const otherGroupId = otherGroup?.id;
     const autoGroupIds = new Set(groups.filter((g) => g.color === "blue").map((g) => g.id));
-    console.log("customGrouping enabled:", settings.customGrouping, "groups:", settings.customGroups);
+    let hasWork = false;
     if (settings.customGrouping) {
       for (const tab of tabs) {
+        if (tab.groupId !== -1) continue;
+        if (shouldSkipUrl(tab.url)) continue;
+        const hostname = getHostname(tab.url);
+        if (!hostname) continue;
+        if (findCustomGroupForHostname(hostname)) {
+          hasWork = true;
+          break;
+        }
+      }
+    }
+    if (!hasWork && settings.autoGrouping) {
+      const domainCounts = /* @__PURE__ */ new Map();
+      for (const tab of tabs) {
+        if (tab.groupId !== -1 && tab.groupId !== otherGroupId) continue;
+        if (shouldSkipUrl(tab.url)) continue;
+        const domain = getDomain(tab.url);
+        if (!domain) continue;
+        const hostname = getHostname(tab.url);
+        if (settings.customGrouping && hostname && findCustomGroupForHostname(hostname)) continue;
+        domainCounts.set(domain, (domainCounts.get(domain) || 0) + 1);
+      }
+      for (const [domain, count] of domainCounts) {
+        const existingGroup = groups.find((g) => g.title === getShortName(domain) && g.color === "blue");
+        if (existingGroup || count >= 2) {
+          hasWork = true;
+          break;
+        }
+      }
+    }
+    if (!hasWork) return;
+    if (settings.customGrouping) {
+      const customGroupBatches = /* @__PURE__ */ new Map();
+      for (const tab of tabs) {
+        if (tab.groupId !== -1) continue;
         if (shouldSkipUrl(tab.url)) continue;
         const hostname = getHostname(tab.url);
         if (!hostname) continue;
         const customGroup = findCustomGroupForHostname(hostname);
-        console.log("Tab hostname:", hostname, "-> customGroup:", customGroup?.name || "none");
         if (customGroup) {
-          const existingCustomGroup = await findGroupByTitleAndColor(tab.windowId, customGroup.name, customGroup.color);
-          const shouldMove = tab.groupId === -1 || tab.groupId === otherGroupId || autoGroupIds.has(tab.groupId);
-          if (shouldMove && tab.groupId !== existingCustomGroup?.id) {
-            if (existingCustomGroup) {
-              await chrome.tabs.group({ tabIds: tab.id, groupId: existingCustomGroup.id });
-            } else {
-              const groupId = await chrome.tabs.group({ tabIds: tab.id });
-              await chrome.tabGroups.update(groupId, { title: customGroup.name, color: customGroup.color });
-            }
+          const key = `${customGroup.name}:${customGroup.color}`;
+          if (!customGroupBatches.has(key)) {
+            customGroupBatches.set(key, { config: customGroup, tabIds: [] });
           }
+          customGroupBatches.get(key).tabIds.push(tab.id);
+        }
+      }
+      for (const [key, { config, tabIds }] of customGroupBatches) {
+        const existingGroup = await findGroupByTitleAndColor(tabs[0].windowId, config.name, config.color);
+        if (existingGroup) {
+          await chrome.tabs.group({ tabIds, groupId: existingGroup.id });
+        } else {
+          const groupId = await chrome.tabs.group({ tabIds });
+          await chrome.tabGroups.update(groupId, { title: config.name, color: config.color });
         }
       }
     }
@@ -251,18 +298,18 @@
         const displayName = getShortName(domain);
         const existingGroup = await findAutoGroupForDomain(domainTabs[0].windowId, domain);
         if (existingGroup) {
-          const tabIds = domainTabs.map((t) => t.id);
-          await chrome.tabs.group({ tabIds, groupId: existingGroup.id });
-          console.log("Added", tabIds.length, "tabs to existing group", displayName);
+          const tabsToAdd = domainTabs.filter((t) => t.groupId !== existingGroup.id);
+          if (tabsToAdd.length > 0) {
+            const tabIds = tabsToAdd.map((t) => t.id);
+            await chrome.tabs.group({ tabIds, groupId: existingGroup.id });
+          }
         } else if (domainTabs.length >= 2) {
           const tabIds = domainTabs.map((t) => t.id);
           const groupId = await chrome.tabs.group({ tabIds });
           await chrome.tabGroups.update(groupId, { title: displayName, color: "blue" });
-          console.log("Created new group", displayName, "with", tabIds.length, "tabs");
         }
       }
     }
-    console.log("applyAutoGroupingToAll: complete");
   }
   async function checkAutoOrdering(tabId) {
     if (!settings.autoOrdering) return;
@@ -283,6 +330,9 @@
     } catch {
     }
   }
+  chrome.tabs.onCreated.addListener(updateBadge);
+  chrome.tabs.onRemoved.addListener(updateBadge);
+  chrome.windows.onFocusChanged.addListener(updateBadge);
   chrome.tabs.onActivated.addListener(async (activeInfo) => {
     const tabs = await chrome.tabs.query({ windowId: activeInfo.windowId });
     for (const tab of tabs) {
@@ -307,50 +357,6 @@
       });
     }
   }, 1e3);
-  chrome.tabs.onCreated.addListener(updateBadge);
-  chrome.tabs.onRemoved.addListener(updateBadge);
-  chrome.windows.onFocusChanged.addListener(updateBadge);
-  chrome.tabGroups.onRemoved.addListener(async (group) => {
-    console.log("!!! GROUP DESTROYED:", group.id, "title:", group.title, "color:", group.color);
-    if (!group.title || group.title === "Other") return;
-    const tabs = await chrome.tabs.query({ currentWindow: true });
-    const customGroup = settings.customGroups?.find((g) => g.name === group.title && g.color === group.color);
-    if (customGroup && settings.customGrouping) {
-      const matchingTabs = tabs.filter((t) => {
-        if (t.groupId !== -1) return false;
-        if (shouldSkipUrl(t.url)) return false;
-        const hostname = getHostname(t.url);
-        if (!hostname) return false;
-        return customGroup.domains.some(
-          (pattern) => hostname === pattern || hostname.endsWith("." + pattern)
-        );
-      });
-      if (matchingTabs.length >= 1) {
-        console.log("Recovering custom group:", group.title, "with", matchingTabs.length, "tabs");
-        const tabIds = matchingTabs.map((t) => t.id);
-        const newGroupId = await chrome.tabs.group({ tabIds });
-        await chrome.tabGroups.update(newGroupId, { title: group.title, color: group.color });
-      }
-      return;
-    }
-    if (settings.autoGrouping && group.color === "blue") {
-      const matchingTabs = tabs.filter(
-        (t) => t.groupId === -1 && !shouldSkipUrl(t.url) && getShortName(getDomain(t.url)) === group.title
-      );
-      if (matchingTabs.length >= 2) {
-        console.log("Recovering auto group:", group.title, "with", matchingTabs.length, "tabs");
-        const tabIds = matchingTabs.map((t) => t.id);
-        const newGroupId = await chrome.tabs.group({ tabIds });
-        await chrome.tabGroups.update(newGroupId, { title: group.title, color: group.color });
-      }
-    }
-  });
-  chrome.tabGroups.onUpdated.addListener((group) => {
-    console.log("GROUP UPDATED:", group.id, "title:", group.title, "color:", group.color);
-  });
-  chrome.tabGroups.onCreated.addListener((group) => {
-    console.log("GROUP CREATED:", group.id);
-  });
   async function init() {
     await loadSettings();
     updateBadge();

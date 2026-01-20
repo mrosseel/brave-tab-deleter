@@ -15,6 +15,30 @@
     return TAB_COLORS[colorName] || TAB_COLORS.grey;
   }
 
+  // lib/drag-position.js
+  function calculateTargetIndex(currentIndex, nextTabIndex, prevTabIndex) {
+    let targetIndex = null;
+    if (nextTabIndex !== null) {
+      targetIndex = nextTabIndex;
+      if (currentIndex < targetIndex) {
+        targetIndex -= 1;
+      }
+    } else if (prevTabIndex !== null) {
+      targetIndex = prevTabIndex + 1;
+      if (currentIndex < targetIndex) {
+        targetIndex -= 1;
+      }
+    }
+    if (targetIndex === currentIndex) {
+      return null;
+    }
+    return targetIndex;
+  }
+  function getDropPosition(mouseY, elementTop, elementHeight) {
+    const midY = elementTop + elementHeight / 2;
+    return mouseY < midY ? "before" : "after";
+  }
+
   // sidebar.js
   var tabListEl = document.getElementById("tab-list");
   var settingsBtn = document.getElementById("settings-btn");
@@ -25,7 +49,7 @@
     window.location.href = "settings.html";
   });
   refreshBtn.addEventListener("click", () => {
-    render("manual-refresh");
+    render("manual-refresh", true);
   });
   collapseAllBtn.addEventListener("click", async () => {
     const groups = await chrome.tabGroups.query({ windowId: chrome.windows.WINDOW_ID_CURRENT });
@@ -34,6 +58,8 @@
         await chrome.tabGroups.update(group.id, { collapsed: true });
       }
     }
+    otherCollapsed = true;
+    render("collapse-all", true);
   });
   expandAllBtn.addEventListener("click", async () => {
     const groups = await chrome.tabGroups.query({ windowId: chrome.windows.WINDOW_ID_CURRENT });
@@ -42,9 +68,13 @@
         await chrome.tabGroups.update(group.id, { collapsed: false });
       }
     }
+    otherCollapsed = false;
+    render("expand-all", true);
   });
   var draggedTab = null;
-  var draggedGroup = null;
+  var draggedElement = null;
+  var originalParent = null;
+  var originalNextSibling = null;
   var otherCollapsed = false;
   var ghostGroups = /* @__PURE__ */ new Map();
   var GHOST_GROUP_SECONDS = 15;
@@ -67,6 +97,7 @@
   }
   var renderCount = 0;
   var renderTimeout = null;
+  var lastStateHash = null;
   function debouncedRender(source) {
     if (renderTimeout) {
       clearTimeout(renderTimeout);
@@ -74,7 +105,7 @@
     renderTimeout = setTimeout(() => {
       renderTimeout = null;
       render(source);
-    }, 100);
+    }, 300);
   }
   async function loadTabs() {
     const tabs = await chrome.tabs.query({ currentWindow: true });
@@ -117,6 +148,22 @@
     }
     return { groupedTabs, ungroupedTabs, ghostTabs, groupMap, groupOrder, windowId };
   }
+  function computeStateHash(groupedTabs, ungroupedTabs, ghostTabs, groupMap) {
+    const parts = [];
+    for (const [groupId, tabs] of groupedTabs) {
+      const group = groupMap.get(groupId);
+      const tabIds = tabs.map((t) => `${t.id}:${t.active}:${t.title}`).join(",");
+      parts.push(`g${groupId}:${group?.collapsed}:${group?.title}:${tabIds}`);
+    }
+    const ungroupedIds = ungroupedTabs.map((t) => `${t.id}:${t.active}:${t.title}`).join(",");
+    parts.push(`u:${ungroupedIds}`);
+    const ghostIds = ghostTabs.map((t) => {
+      const ghost = ghostGroups.get(t.id);
+      return `${t.id}:${ghost?.title}:${ghost?.color}`;
+    }).join(",");
+    parts.push(`gh:${ghostIds}`);
+    return parts.join("|");
+  }
   function getGroupColor(group) {
     return getColorHex(group.color);
   }
@@ -126,47 +173,73 @@
     div.dataset.tabId = tab.id;
     div.draggable = true;
     div.addEventListener("dragstart", (e) => {
-      draggedTab = { tabId: tab.id, element: div };
+      draggedTab = { tabId: tab.id, groupId: tab.groupId };
+      draggedElement = div;
+      originalParent = div.parentNode;
+      originalNextSibling = div.nextSibling;
       div.classList.add("dragging");
       e.dataTransfer.effectAllowed = "move";
       e.dataTransfer.setData("text/plain", tab.id.toString());
       e.stopPropagation();
     });
-    div.addEventListener("dragend", () => {
+    div.addEventListener("dragend", async () => {
       div.classList.remove("dragging");
+      if (draggedTab && draggedElement) {
+        const currentParent = draggedElement.parentNode;
+        const movedToNewPosition = currentParent !== originalParent || draggedElement.nextSibling !== originalNextSibling;
+        if (movedToNewPosition) {
+          const targetGroupContainer = currentParent.closest(".tab-group");
+          const targetGroupId = targetGroupContainer?.dataset.groupId;
+          const nextTab = draggedElement.nextElementSibling;
+          const prevTab = draggedElement.previousElementSibling;
+          const nextTabId = nextTab?.dataset?.tabId ? parseInt(nextTab.dataset.tabId) : null;
+          const prevTabId = prevTab?.dataset?.tabId ? parseInt(prevTab.dataset.tabId) : null;
+          try {
+            if (targetGroupId === "ungrouped") {
+              await chrome.tabs.ungroup(draggedTab.tabId);
+            } else if (targetGroupId && !targetGroupId.startsWith("ghost-")) {
+              const groupIdNum = parseInt(targetGroupId);
+              if (!isNaN(groupIdNum) && groupIdNum !== draggedTab.groupId) {
+                await chrome.tabs.group({ tabIds: draggedTab.tabId, groupId: groupIdNum });
+              }
+            }
+            const currentTab = await chrome.tabs.get(draggedTab.tabId);
+            const nextTabIndex = nextTabId ? (await chrome.tabs.get(nextTabId)).index : null;
+            const prevTabIndex = prevTabId ? (await chrome.tabs.get(prevTabId)).index : null;
+            const targetIndex = calculateTargetIndex(currentTab.index, nextTabIndex, prevTabIndex);
+            if (targetIndex !== null) {
+              await chrome.tabs.move(draggedTab.tabId, { index: targetIndex });
+            }
+            render("tab-drag-complete");
+          } catch (err) {
+            console.error("Failed to move tab:", err);
+            if (originalParent) {
+              originalParent.insertBefore(draggedElement, originalNextSibling);
+            }
+          }
+        }
+      }
       draggedTab = null;
-      document.querySelectorAll(".drag-over, .drag-over-empty").forEach((el) => {
-        el.classList.remove("drag-over", "drag-over-empty");
-      });
+      draggedElement = null;
+      originalParent = null;
+      originalNextSibling = null;
     });
     div.addEventListener("dragover", (e) => {
       e.preventDefault();
-      if (draggedTab && draggedTab.tabId !== tab.id) {
-        div.classList.add("drag-over");
-      }
-    });
-    div.addEventListener("dragleave", () => {
-      div.classList.remove("drag-over");
-    });
-    div.addEventListener("drop", async (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      div.classList.remove("drag-over");
-      if (draggedTab && draggedTab.tabId !== tab.id) {
-        const draggedTabId = draggedTab.tabId;
-        try {
-          const draggedTabInfo = await chrome.tabs.get(draggedTabId);
-          const originalGroupId = draggedTabInfo.groupId;
-          const targetTab = await chrome.tabs.get(tab.id);
-          await chrome.tabs.move(draggedTabId, { index: targetTab.index });
-          if (originalGroupId !== -1) {
-            await chrome.tabs.group({ tabIds: draggedTabId, groupId: originalGroupId });
-          }
-          render("tab-drop-reorder");
-        } catch (err) {
-          console.error("Failed to move tab:", err);
+      if (draggedElement && draggedElement !== div) {
+        const rect = div.getBoundingClientRect();
+        const position = getDropPosition(e.clientY, rect.top, rect.height);
+        const parent = div.parentNode;
+        if (position === "before") {
+          parent.insertBefore(draggedElement, div);
+        } else {
+          parent.insertBefore(draggedElement, div.nextSibling);
         }
       }
+    });
+    div.addEventListener("drop", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
     });
     const closeBtn = document.createElement("button");
     closeBtn.className = "close-btn";
@@ -210,68 +283,6 @@
     const container = document.createElement("div");
     container.className = "tab-group" + (isGhost ? " ghost-group" : "");
     container.dataset.groupId = groupId;
-    if (!isUngrouped && !isGhost && groupInfo) {
-      container.draggable = true;
-      container.addEventListener("dragstart", (e) => {
-        if (draggedTab) return;
-        draggedGroup = { groupId: groupInfo.id, element: container };
-        container.classList.add("dragging");
-        e.dataTransfer.effectAllowed = "move";
-        e.dataTransfer.setData("text/plain", `group-${groupInfo.id}`);
-      });
-      container.addEventListener("dragend", () => {
-        container.classList.remove("dragging");
-        draggedGroup = null;
-        document.querySelectorAll(".drag-over").forEach((el) => {
-          el.classList.remove("drag-over");
-        });
-      });
-      container.addEventListener("dragover", (e) => {
-        e.preventDefault();
-        if (draggedGroup && draggedGroup.groupId !== groupInfo.id) {
-          container.classList.add("drag-over");
-        }
-        if (draggedTab) {
-          e.stopPropagation();
-        }
-      });
-      container.addEventListener("dragleave", (e) => {
-        if (!container.contains(e.relatedTarget)) {
-          container.classList.remove("drag-over");
-        }
-      });
-      container.addEventListener("drop", async (e) => {
-        e.preventDefault();
-        container.classList.remove("drag-over");
-        const draggedGroupId = draggedGroup?.groupId;
-        const draggedTabId = draggedTab?.tabId;
-        if (draggedGroupId && draggedGroupId !== groupInfo.id) {
-          try {
-            const targetGroupTabs = await chrome.tabs.query({ groupId: groupInfo.id });
-            if (targetGroupTabs.length > 0) {
-              const draggedGroupTabs = await chrome.tabs.query({ groupId: draggedGroupId });
-              if (draggedGroupTabs.length > 0) {
-                const targetIndex = Math.min(...targetGroupTabs.map((t) => t.index));
-                const tabIds = draggedGroupTabs.map((t) => t.id);
-                await chrome.tabs.move(tabIds, { index: targetIndex });
-                await chrome.tabs.group({ tabIds, groupId: draggedGroupId });
-                render("group-reorder");
-              }
-            }
-          } catch (err) {
-            console.error("Failed to reorder groups:", err);
-          }
-        }
-        if (draggedTabId) {
-          try {
-            await chrome.tabs.group({ tabIds: draggedTabId, groupId: groupInfo.id });
-            render("tab-drop-to-group");
-          } catch (err) {
-            console.error("Failed to move tab to group:", err);
-          }
-        }
-      });
-    }
     const isCollapsed = groupInfo?.collapsed || false;
     const header = document.createElement("div");
     header.className = "group-header" + (isCollapsed ? " collapsed" : "");
@@ -300,22 +311,20 @@
       countdownEl.title = "Tab will move to Other when timer expires";
       rightSection.appendChild(countdownEl);
     }
-    if (!isUngrouped) {
-      const closeGroupBtn = document.createElement("button");
-      closeGroupBtn.className = "close-group-btn";
-      closeGroupBtn.innerHTML = "&times;";
-      closeGroupBtn.title = "Close all tabs in group";
-      closeGroupBtn.addEventListener("click", async (e) => {
-        e.stopPropagation();
-        const scrollTop = document.documentElement.scrollTop || document.body.scrollTop;
-        const tabIds = tabs.map((t) => t.id);
-        tabIds.forEach((id) => ghostGroups.delete(id));
-        saveGhostGroups();
-        await chrome.tabs.remove(tabIds);
-        window.scrollTo(0, scrollTop);
-      });
-      rightSection.appendChild(closeGroupBtn);
-    }
+    const closeGroupBtn = document.createElement("button");
+    closeGroupBtn.className = "close-group-btn";
+    closeGroupBtn.innerHTML = "&times;";
+    closeGroupBtn.title = isUngrouped ? "Close all ungrouped tabs" : "Close all tabs in group";
+    closeGroupBtn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const scrollTop = document.documentElement.scrollTop || document.body.scrollTop;
+      const tabIds = tabs.map((t) => t.id);
+      tabIds.forEach((id) => ghostGroups.delete(id));
+      saveGhostGroups();
+      await chrome.tabs.remove(tabIds);
+      window.scrollTo(0, scrollTop);
+    });
+    rightSection.appendChild(closeGroupBtn);
     const tabCount = document.createElement("span");
     tabCount.className = "tab-count";
     tabCount.textContent = `(${tabs.length})`;
@@ -327,31 +336,31 @@
     tabsContainer.className = "group-tabs" + (isCollapsed ? " collapsed" : "");
     tabsContainer.addEventListener("dragover", (e) => {
       e.preventDefault();
-      if (draggedTab) {
-        tabsContainer.classList.add("drag-over-empty");
-      }
-    });
-    tabsContainer.addEventListener("dragleave", (e) => {
-      if (!tabsContainer.contains(e.relatedTarget)) {
-        tabsContainer.classList.remove("drag-over-empty");
-      }
-    });
-    tabsContainer.addEventListener("drop", async (e) => {
-      e.preventDefault();
-      tabsContainer.classList.remove("drag-over-empty");
-      const draggedTabId = draggedTab?.tabId;
-      if (draggedTabId) {
-        try {
-          if (isUngrouped) {
-            await chrome.tabs.ungroup(draggedTabId);
-          } else if (groupInfo && groupInfo.id) {
-            await chrome.tabs.group({ tabIds: draggedTabId, groupId: groupInfo.id });
+      if (draggedElement && draggedTab) {
+        if (draggedElement.parentNode !== tabsContainer) {
+          const children = Array.from(tabsContainer.children).filter((c) => c !== draggedElement);
+          if (children.length === 0) {
+            tabsContainer.appendChild(draggedElement);
+          } else {
+            let inserted = false;
+            for (const child of children) {
+              const rect = child.getBoundingClientRect();
+              if (getDropPosition(e.clientY, rect.top, rect.height) === "before") {
+                tabsContainer.insertBefore(draggedElement, child);
+                inserted = true;
+                break;
+              }
+            }
+            if (!inserted) {
+              tabsContainer.appendChild(draggedElement);
+            }
           }
-          render("tabs-container-drop");
-        } catch (err) {
-          console.error("Failed to move tab:", err);
         }
       }
+    });
+    tabsContainer.addEventListener("drop", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
     });
     tabs.forEach((tab) => {
       let onClose = null;
@@ -394,10 +403,15 @@
     container.appendChild(tabsContainer);
     return container;
   }
-  async function render(source = "unknown") {
+  async function render(source = "unknown", forceRender = false) {
     renderCount++;
     const scrollTop = document.documentElement.scrollTop || document.body.scrollTop;
-    const { groupedTabs, ungroupedTabs, ghostTabs, groupMap, groupOrder, firstTabIndex } = await loadTabs();
+    const { groupedTabs, ungroupedTabs, ghostTabs, groupMap, groupOrder } = await loadTabs();
+    const stateHash = computeStateHash(groupedTabs, ungroupedTabs, ghostTabs, groupMap);
+    if (!forceRender && stateHash === lastStateHash) {
+      return;
+    }
+    lastStateHash = stateHash;
     tabListEl.innerHTML = "";
     const renderItems = [];
     groupOrder.forEach((groupId) => {
@@ -472,11 +486,27 @@
     await loadGhostGroups();
     chrome.runtime.sendMessage({ type: "sidebarOpened" });
     await new Promise((r) => setTimeout(r, 100));
-    render("initial");
+    render("initial", true);
   })();
   setInterval(() => {
-    if (ghostGroups.size > 0) {
-      render("interval");
+    if (ghostGroups.size === 0) return;
+    const now = Date.now();
+    let needsFullRender = false;
+    for (const [tabId, ghost] of ghostGroups.entries()) {
+      if (now >= ghost.expiresAt) {
+        ghostGroups.delete(tabId);
+        needsFullRender = true;
+      } else {
+        const remainingSeconds = Math.ceil((ghost.expiresAt - now) / 1e3);
+        const countdownEl = document.querySelector(`[data-group-id="ghost-${tabId}"] .countdown`);
+        if (countdownEl) {
+          countdownEl.textContent = `${remainingSeconds}s`;
+        }
+      }
+    }
+    if (needsFullRender) {
+      saveGhostGroups();
+      render("ghost-expired");
     }
   }, 1e3);
   chrome.tabs.onCreated.addListener(() => debouncedRender("tabs.onCreated"));

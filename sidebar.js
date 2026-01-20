@@ -1,4 +1,5 @@
 import { getColorHex } from './shared.js';
+import { calculateTargetIndex, getDropPosition } from './lib/drag-position.js';
 
 const tabListEl = document.getElementById('tab-list');
 const settingsBtn = document.getElementById('settings-btn');
@@ -13,7 +14,7 @@ settingsBtn.addEventListener('click', () => {
 
 // Refresh button - force re-render
 refreshBtn.addEventListener('click', () => {
-  render('manual-refresh');
+  render('manual-refresh', true);
 });
 
 // Collapse all groups
@@ -24,6 +25,9 @@ collapseAllBtn.addEventListener('click', async () => {
       await chrome.tabGroups.update(group.id, { collapsed: true });
     }
   }
+  // Also collapse "Other" section
+  otherCollapsed = true;
+  render('collapse-all', true);
 });
 
 // Expand all groups
@@ -34,11 +38,16 @@ expandAllBtn.addEventListener('click', async () => {
       await chrome.tabGroups.update(group.id, { collapsed: false });
     }
   }
+  // Also expand "Other" section
+  otherCollapsed = false;
+  render('expand-all', true);
 });
 
 // Drag and drop state
 let draggedTab = null;
-let draggedGroup = null;
+let draggedElement = null;
+let originalParent = null;
+let originalNextSibling = null;
 
 // Local collapse state for "Other" section (not a real Chrome group)
 let otherCollapsed = false;
@@ -74,8 +83,9 @@ async function saveGhostGroups() {
 // Track render calls and debounce
 let renderCount = 0;
 let renderTimeout = null;
+let lastStateHash = null;
 
-// Debounced render - waits 100ms after last call to reduce flicker during group recovery
+// Debounced render - waits 300ms after last call to let grouping complete
 function debouncedRender(source) {
   if (renderTimeout) {
     clearTimeout(renderTimeout);
@@ -83,7 +93,7 @@ function debouncedRender(source) {
   renderTimeout = setTimeout(() => {
     renderTimeout = null;
     render(source);
-  }, 100);
+  }, 300);
 }
 
 async function loadTabs() {
@@ -138,6 +148,31 @@ async function loadTabs() {
   return { groupedTabs, ungroupedTabs, ghostTabs, groupMap, groupOrder, windowId };
 }
 
+// Compute a hash of the current state for comparison
+function computeStateHash(groupedTabs, ungroupedTabs, ghostTabs, groupMap) {
+  const parts = [];
+
+  // Hash grouped tabs
+  for (const [groupId, tabs] of groupedTabs) {
+    const group = groupMap.get(groupId);
+    const tabIds = tabs.map(t => `${t.id}:${t.active}:${t.title}`).join(',');
+    parts.push(`g${groupId}:${group?.collapsed}:${group?.title}:${tabIds}`);
+  }
+
+  // Hash ungrouped tabs
+  const ungroupedIds = ungroupedTabs.map(t => `${t.id}:${t.active}:${t.title}`).join(',');
+  parts.push(`u:${ungroupedIds}`);
+
+  // Hash ghost tabs (excluding expiresAt since that changes every second)
+  const ghostIds = ghostTabs.map(t => {
+    const ghost = ghostGroups.get(t.id);
+    return `${t.id}:${ghost?.title}:${ghost?.color}`;
+  }).join(',');
+  parts.push(`gh:${ghostIds}`);
+
+  return parts.join('|');
+}
+
 // Use getColorHex from shared.js
 function getGroupColor(group) {
   return getColorHex(group.color);
@@ -149,64 +184,93 @@ function createTabElement(tab, groupInfo, onClose) {
   div.dataset.tabId = tab.id;
   div.draggable = true;
 
-  // Drag events for tab
+  // Drag start
   div.addEventListener('dragstart', (e) => {
-    draggedTab = { tabId: tab.id, element: div };
+    draggedTab = { tabId: tab.id, groupId: tab.groupId };
+    draggedElement = div;
+    originalParent = div.parentNode;
+    originalNextSibling = div.nextSibling;
+
     div.classList.add('dragging');
     e.dataTransfer.effectAllowed = 'move';
     e.dataTransfer.setData('text/plain', tab.id.toString());
-    // Stop group drag from triggering
     e.stopPropagation();
   });
 
-  div.addEventListener('dragend', () => {
+  // Drag end - commit the move
+  div.addEventListener('dragend', async () => {
     div.classList.remove('dragging');
-    draggedTab = null;
-    // Clean up all drag-over classes
-    document.querySelectorAll('.drag-over, .drag-over-empty').forEach(el => {
-      el.classList.remove('drag-over', 'drag-over-empty');
-    });
-  });
 
-  div.addEventListener('dragover', (e) => {
-    e.preventDefault();
-    if (draggedTab && draggedTab.tabId !== tab.id) {
-      div.classList.add('drag-over');
-    }
-  });
+    if (draggedTab && draggedElement) {
+      const currentParent = draggedElement.parentNode;
+      const movedToNewPosition = currentParent !== originalParent || draggedElement.nextSibling !== originalNextSibling;
 
-  div.addEventListener('dragleave', () => {
-    div.classList.remove('drag-over');
-  });
+      if (movedToNewPosition) {
+        const targetGroupContainer = currentParent.closest('.tab-group');
+        const targetGroupId = targetGroupContainer?.dataset.groupId;
 
-  div.addEventListener('drop', async (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    div.classList.remove('drag-over');
+        const nextTab = draggedElement.nextElementSibling;
+        const prevTab = draggedElement.previousElementSibling;
+        const nextTabId = nextTab?.dataset?.tabId ? parseInt(nextTab.dataset.tabId) : null;
+        const prevTabId = prevTab?.dataset?.tabId ? parseInt(prevTab.dataset.tabId) : null;
 
-    if (draggedTab && draggedTab.tabId !== tab.id) {
-      const draggedTabId = draggedTab.tabId; // Capture before async
-      try {
-        // Get dragged tab info BEFORE moving (to preserve group)
-        const draggedTabInfo = await chrome.tabs.get(draggedTabId);
-        const originalGroupId = draggedTabInfo.groupId;
+        try {
+          // Handle group change FIRST
+          if (targetGroupId === 'ungrouped') {
+            await chrome.tabs.ungroup(draggedTab.tabId);
+          } else if (targetGroupId && !targetGroupId.startsWith('ghost-')) {
+            const groupIdNum = parseInt(targetGroupId);
+            if (!isNaN(groupIdNum) && groupIdNum !== draggedTab.groupId) {
+              await chrome.tabs.group({ tabIds: draggedTab.tabId, groupId: groupIdNum });
+            }
+          }
 
-        // Get target tab info to find its index
-        const targetTab = await chrome.tabs.get(tab.id);
-        // Move dragged tab to target position
-        await chrome.tabs.move(draggedTabId, { index: targetTab.index });
+          // Calculate final position
+          const currentTab = await chrome.tabs.get(draggedTab.tabId);
+          const nextTabIndex = nextTabId ? (await chrome.tabs.get(nextTabId)).index : null;
+          const prevTabIndex = prevTabId ? (await chrome.tabs.get(prevTabId)).index : null;
 
-        // Re-group the tab if it was in a group (move can ungroup it)
-        if (originalGroupId !== -1) {
-          await chrome.tabs.group({ tabIds: draggedTabId, groupId: originalGroupId });
+          const targetIndex = calculateTargetIndex(currentTab.index, nextTabIndex, prevTabIndex);
+          if (targetIndex !== null) {
+            await chrome.tabs.move(draggedTab.tabId, { index: targetIndex });
+          }
+
+          render('tab-drag-complete');
+        } catch (err) {
+          console.error('Failed to move tab:', err);
+          // Revert on error
+          if (originalParent) {
+            originalParent.insertBefore(draggedElement, originalNextSibling);
+          }
         }
-
-        // Force re-render to ensure sidebar syncs with browser
-        render('tab-drop-reorder');
-      } catch (err) {
-        console.error('Failed to move tab:', err);
       }
     }
+
+    draggedTab = null;
+    draggedElement = null;
+    originalParent = null;
+    originalNextSibling = null;
+  });
+
+  // Drag over - move element to show preview
+  div.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    if (draggedElement && draggedElement !== div) {
+      const rect = div.getBoundingClientRect();
+      const position = getDropPosition(e.clientY, rect.top, rect.height);
+      const parent = div.parentNode;
+
+      if (position === 'before') {
+        parent.insertBefore(draggedElement, div);
+      } else {
+        parent.insertBefore(draggedElement, div.nextSibling);
+      }
+    }
+  });
+
+  div.addEventListener('drop', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
   });
 
   const closeBtn = document.createElement('button');
@@ -260,91 +324,7 @@ function createGroupElement(groupId, groupInfo, tabs, isUngrouped = false, isGho
   container.className = 'tab-group' + (isGhost ? ' ghost-group' : '');
   container.dataset.groupId = groupId;
 
-  // Make groups draggable (not ungrouped or ghost)
-  if (!isUngrouped && !isGhost && groupInfo) {
-    container.draggable = true;
-
-    container.addEventListener('dragstart', (e) => {
-      // Only start group drag if not dragging a tab
-      if (draggedTab) return;
-      draggedGroup = { groupId: groupInfo.id, element: container };
-      container.classList.add('dragging');
-      e.dataTransfer.effectAllowed = 'move';
-      e.dataTransfer.setData('text/plain', `group-${groupInfo.id}`);
-    });
-
-    container.addEventListener('dragend', () => {
-      container.classList.remove('dragging');
-      draggedGroup = null;
-      document.querySelectorAll('.drag-over').forEach(el => {
-        el.classList.remove('drag-over');
-      });
-    });
-
-    container.addEventListener('dragover', (e) => {
-      e.preventDefault();
-      // Show drop indicator for group reordering
-      if (draggedGroup && draggedGroup.groupId !== groupInfo.id) {
-        container.classList.add('drag-over');
-      }
-      // Allow dropping tabs into this group
-      if (draggedTab) {
-        e.stopPropagation();
-      }
-    });
-
-    container.addEventListener('dragleave', (e) => {
-      // Only remove if leaving the container entirely
-      if (!container.contains(e.relatedTarget)) {
-        container.classList.remove('drag-over');
-      }
-    });
-
-    container.addEventListener('drop', async (e) => {
-      e.preventDefault();
-      container.classList.remove('drag-over');
-
-      // Capture values before async operations
-      const draggedGroupId = draggedGroup?.groupId;
-      const draggedTabId = draggedTab?.tabId;
-
-      // Handle group reordering
-      if (draggedGroupId && draggedGroupId !== groupInfo.id) {
-        try {
-          // Get all tabs in the target group to find its position
-          const targetGroupTabs = await chrome.tabs.query({ groupId: groupInfo.id });
-          if (targetGroupTabs.length > 0) {
-            // Get all tabs in the dragged group
-            const draggedGroupTabs = await chrome.tabs.query({ groupId: draggedGroupId });
-            if (draggedGroupTabs.length > 0) {
-              // Move all tabs from dragged group to position before target group
-              const targetIndex = Math.min(...targetGroupTabs.map(t => t.index));
-              const tabIds = draggedGroupTabs.map(t => t.id);
-              await chrome.tabs.move(tabIds, { index: targetIndex });
-              // Re-group tabs (move can ungroup them)
-              await chrome.tabs.group({ tabIds, groupId: draggedGroupId });
-              // Force re-render to ensure sidebar syncs with browser
-              render('group-reorder');
-            }
-          }
-        } catch (err) {
-          console.error('Failed to reorder groups:', err);
-        }
-      }
-
-      // Handle dropping tab into group
-      if (draggedTabId) {
-        try {
-          // Add tab to this group
-          await chrome.tabs.group({ tabIds: draggedTabId, groupId: groupInfo.id });
-          // Force re-render to ensure sidebar syncs with browser
-          render('tab-drop-to-group');
-        } catch (err) {
-          console.error('Failed to move tab to group:', err);
-        }
-      }
-    });
-  }
+  // Group dragging disabled - using mouse-based tab dragging only
 
   const isCollapsed = groupInfo?.collapsed || false;
   const header = document.createElement('div');
@@ -381,24 +361,22 @@ function createGroupElement(groupId, groupInfo, tabs, isUngrouped = false, isGho
     rightSection.appendChild(countdownEl);
   }
 
-  // Close group button (only for actual groups and ghost groups, not ungrouped)
-  if (!isUngrouped) {
-    const closeGroupBtn = document.createElement('button');
-    closeGroupBtn.className = 'close-group-btn';
-    closeGroupBtn.innerHTML = '&times;';
-    closeGroupBtn.title = 'Close all tabs in group';
-    closeGroupBtn.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      const scrollTop = document.documentElement.scrollTop || document.body.scrollTop;
-      const tabIds = tabs.map(t => t.id);
-      // Clean up ghost groups for these tabs
-      tabIds.forEach(id => ghostGroups.delete(id));
-      saveGhostGroups();
-      await chrome.tabs.remove(tabIds);
-      window.scrollTo(0, scrollTop);
-    });
-    rightSection.appendChild(closeGroupBtn);
-  }
+  // Close group button (for all groups including "Other")
+  const closeGroupBtn = document.createElement('button');
+  closeGroupBtn.className = 'close-group-btn';
+  closeGroupBtn.innerHTML = '&times;';
+  closeGroupBtn.title = isUngrouped ? 'Close all ungrouped tabs' : 'Close all tabs in group';
+  closeGroupBtn.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    const scrollTop = document.documentElement.scrollTop || document.body.scrollTop;
+    const tabIds = tabs.map(t => t.id);
+    // Clean up ghost groups for these tabs
+    tabIds.forEach(id => ghostGroups.delete(id));
+    saveGhostGroups();
+    await chrome.tabs.remove(tabIds);
+    window.scrollTo(0, scrollTop);
+  });
+  rightSection.appendChild(closeGroupBtn);
 
   const tabCount = document.createElement('span');
   tabCount.className = 'tab-count';
@@ -415,37 +393,33 @@ function createGroupElement(groupId, groupInfo, tabs, isUngrouped = false, isGho
   // Allow dropping tabs into the group's tab container
   tabsContainer.addEventListener('dragover', (e) => {
     e.preventDefault();
-    if (draggedTab) {
-      tabsContainer.classList.add('drag-over-empty');
-    }
-  });
-
-  tabsContainer.addEventListener('dragleave', (e) => {
-    if (!tabsContainer.contains(e.relatedTarget)) {
-      tabsContainer.classList.remove('drag-over-empty');
-    }
-  });
-
-  tabsContainer.addEventListener('drop', async (e) => {
-    e.preventDefault();
-    tabsContainer.classList.remove('drag-over-empty');
-
-    const draggedTabId = draggedTab?.tabId; // Capture before async
-    if (draggedTabId) {
-      try {
-        if (isUngrouped) {
-          // Remove from group (ungroup)
-          await chrome.tabs.ungroup(draggedTabId);
-        } else if (groupInfo && groupInfo.id) {
-          // Add to this group
-          await chrome.tabs.group({ tabIds: draggedTabId, groupId: groupInfo.id });
+    if (draggedElement && draggedTab) {
+      if (draggedElement.parentNode !== tabsContainer) {
+        // Move element into this group
+        const children = Array.from(tabsContainer.children).filter(c => c !== draggedElement);
+        if (children.length === 0) {
+          tabsContainer.appendChild(draggedElement);
+        } else {
+          let inserted = false;
+          for (const child of children) {
+            const rect = child.getBoundingClientRect();
+            if (getDropPosition(e.clientY, rect.top, rect.height) === 'before') {
+              tabsContainer.insertBefore(draggedElement, child);
+              inserted = true;
+              break;
+            }
+          }
+          if (!inserted) {
+            tabsContainer.appendChild(draggedElement);
+          }
         }
-        // Force re-render to ensure sidebar syncs with browser
-        render('tabs-container-drop');
-      } catch (err) {
-        console.error('Failed to move tab:', err);
       }
     }
+  });
+
+  tabsContainer.addEventListener('drop', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
   });
 
   tabs.forEach(tab => {
@@ -502,11 +476,18 @@ function createGroupElement(groupId, groupInfo, tabs, isUngrouped = false, isGho
   return container;
 }
 
-async function render(source = 'unknown') {
+async function render(source = 'unknown', forceRender = false) {
   renderCount++;
   const scrollTop = document.documentElement.scrollTop || document.body.scrollTop;
 
-  const { groupedTabs, ungroupedTabs, ghostTabs, groupMap, groupOrder, firstTabIndex } = await loadTabs();
+  const { groupedTabs, ungroupedTabs, ghostTabs, groupMap, groupOrder } = await loadTabs();
+
+  // Skip render if state hasn't changed (unless forced)
+  const stateHash = computeStateHash(groupedTabs, ungroupedTabs, ghostTabs, groupMap);
+  if (!forceRender && stateHash === lastStateHash) {
+    return;
+  }
+  lastStateHash = stateHash;
 
   tabListEl.innerHTML = '';
 
@@ -599,14 +580,34 @@ async function render(source = 'unknown') {
   chrome.runtime.sendMessage({ type: 'sidebarOpened' });
   // Small delay to let grouping complete before render
   await new Promise(r => setTimeout(r, 100));
-  render('initial');
+  render('initial', true);
 })();
 
-// Update countdown display every second
+// Update countdown display in-place (no full re-render)
 setInterval(() => {
-  // Check if any ghost groups have active countdowns
-  if (ghostGroups.size > 0) {
-    render('interval');
+  if (ghostGroups.size === 0) return;
+
+  const now = Date.now();
+  let needsFullRender = false;
+
+  for (const [tabId, ghost] of ghostGroups.entries()) {
+    if (now >= ghost.expiresAt) {
+      // Ghost expired - need full render to move tab to "Other"
+      ghostGroups.delete(tabId);
+      needsFullRender = true;
+    } else {
+      // Update countdown text in-place
+      const remainingSeconds = Math.ceil((ghost.expiresAt - now) / 1000);
+      const countdownEl = document.querySelector(`[data-group-id="ghost-${tabId}"] .countdown`);
+      if (countdownEl) {
+        countdownEl.textContent = `${remainingSeconds}s`;
+      }
+    }
+  }
+
+  if (needsFullRender) {
+    saveGhostGroups();
+    render('ghost-expired');
   }
 }, 1000);
 
