@@ -1,4 +1,5 @@
-import { getColorHex, escapeHtml } from './shared.js';
+import { getColorHex } from './lib/colors.js';
+import { escapeHtml } from './lib/domain.js';
 
 // Default settings
 const DEFAULT_SETTINGS = {
@@ -94,8 +95,6 @@ function renderCustomGroups() {
     });
   });
 }
-
-// getColorHex and escapeHtml are imported from shared.js
 
 // Modal functions
 function openModal(title, group = null) {

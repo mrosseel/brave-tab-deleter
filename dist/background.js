@@ -1,5 +1,5 @@
 (() => {
-  // shared.js
+  // lib/domain.js
   var TWO_PART_TLDS = [
     "co.uk",
     "com.au",
@@ -17,13 +17,19 @@
     const ipv6Pattern = /^([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}$/;
     return ipv4Pattern.test(hostname) || ipv6Pattern.test(hostname);
   }
-  function getHostname(url) {
-    try {
-      const urlObj = new URL(url);
-      return urlObj.hostname.toLowerCase();
-    } catch {
-      return null;
+  function getShortName(domain) {
+    if (isIPAddress(domain)) {
+      return domain;
     }
+    const parts = domain.split(".");
+    if (parts.length >= 2) {
+      const lastTwo = parts.slice(-2).join(".");
+      if (TWO_PART_TLDS.includes(lastTwo) && parts.length >= 3) {
+        return parts.slice(0, -2).join(".");
+      }
+      return parts.slice(0, -1).join(".");
+    }
+    return domain;
   }
   function getDomain(url) {
     try {
@@ -45,19 +51,13 @@
       return null;
     }
   }
-  function getShortName(domain) {
-    if (isIPAddress(domain)) {
-      return domain;
+  function getHostname(url) {
+    try {
+      const urlObj = new URL(url);
+      return urlObj.hostname.toLowerCase();
+    } catch {
+      return null;
     }
-    const parts = domain.split(".");
-    if (parts.length >= 2) {
-      const lastTwo = parts.slice(-2).join(".");
-      if (TWO_PART_TLDS.includes(lastTwo) && parts.length >= 3) {
-        return parts.slice(0, -2).join(".");
-      }
-      return parts.slice(0, -1).join(".");
-    }
-    return domain;
   }
   function shouldSkipUrl(url) {
     return !url || url === "chrome://newtab/" || url === "about:blank" || url.startsWith("chrome://") || url.startsWith("chrome-extension://");
@@ -100,8 +100,24 @@
     };
   }
 
+  // lib/colors.js
+  var ALL_COLOR_NAMES = ["blue", "red", "yellow", "green", "pink", "purple", "cyan", "orange", "grey"];
+  function findAvailableColor(usedColors, reservedColors = /* @__PURE__ */ new Set()) {
+    for (const color of ALL_COLOR_NAMES) {
+      if (!usedColors.has(color) && !reservedColors.has(color)) {
+        return color;
+      }
+    }
+    for (const color of ALL_COLOR_NAMES) {
+      if (!usedColors.has(color)) {
+        return color;
+      }
+    }
+    return "blue";
+  }
+
   // background.js
-  console.log("=== BACKGROUND.JS VERSION 3 LOADED ===");
+  console.log("=== BACKGROUND.JS VERSION 6 LOADED ===");
   var sidebarOpen = /* @__PURE__ */ new Map();
   var settings = {
     autoGrouping: false,
@@ -149,14 +165,20 @@
     chrome.action.setBadgeBackgroundColor({ color: "#6366f1" });
   }
   function findCustomGroupForHostname(hostname) {
+    console.log("[bg] findCustomGroupForHostname:", hostname, "customGrouping:", settings.customGrouping, "groups:", settings.customGroups);
     if (!settings.customGrouping || !settings.customGroups) return null;
     for (const group of settings.customGroups) {
       for (const pattern of group.domains) {
-        if (hostname === pattern || hostname.endsWith("." + pattern)) {
+        const exactMatch = hostname === pattern;
+        const suffixMatch = hostname.endsWith("." + pattern);
+        console.log("[bg] Checking pattern:", pattern, "against:", hostname, "exact:", exactMatch, "suffix:", suffixMatch);
+        if (exactMatch || suffixMatch) {
+          console.log("[bg] MATCH! Returning group:", group.name);
           return group;
         }
       }
     }
+    console.log("[bg] No match found");
     return null;
   }
   async function findGroupByTitleAndColor(windowId, title, color) {
@@ -166,7 +188,29 @@
   async function findAutoGroupForDomain(windowId, domain) {
     const expectedTitle = getShortName(domain);
     const groups = await chrome.tabGroups.query({ windowId });
-    return groups.find((g) => g.title === expectedTitle && g.color === "blue");
+    return groups.find((g) => g.title === expectedTitle);
+  }
+  function getCustomGroupColors() {
+    if (!settings.customGrouping || !settings.customGroups) return /* @__PURE__ */ new Set();
+    return new Set(settings.customGroups.map((g) => g.color));
+  }
+  async function getNextAvailableColor(windowId) {
+    const groups = await chrome.tabGroups.query({ windowId });
+    const usedColors = new Set(groups.map((g) => g.color));
+    return findAvailableColor(usedColors, getCustomGroupColors());
+  }
+  async function ensureColorForCustomGroup(windowId, customGroupTitle, desiredColor) {
+    const groups = await chrome.tabGroups.query({ windowId });
+    const conflictingGroup = groups.find((g) => g.color === desiredColor && g.title !== customGroupTitle);
+    if (conflictingGroup) {
+      const usedColors = new Set(groups.map((g) => g.color));
+      usedColors.add(desiredColor);
+      const newColor = findAvailableColor(usedColors, getCustomGroupColors());
+      if (newColor !== desiredColor) {
+        console.log(`[bg] Swapping color: ${conflictingGroup.title} from ${desiredColor} to ${newColor}`);
+        await chrome.tabGroups.update(conflictingGroup.id, { color: newColor });
+      }
+    }
   }
   async function groupSingleTab(tab) {
     if (shouldSkipUrl(tab.url)) return;
@@ -186,13 +230,20 @@
         if (existingGroup && currentTab.groupId !== existingGroup.id) {
           await chrome.tabs.group({ tabIds: currentTab.id, groupId: existingGroup.id });
         } else if (!existingGroup) {
+          await ensureColorForCustomGroup(currentTab.windowId, customGroup.name, customGroup.color);
           const groupId = await chrome.tabs.group({ tabIds: currentTab.id });
           await chrome.tabGroups.update(groupId, { title: customGroup.name, color: customGroup.color });
         }
         return;
       }
     }
-    if (currentTab.groupId !== -1) return;
+    if (currentTab.groupId !== -1) {
+      try {
+        const group = await chrome.tabGroups.get(currentTab.groupId);
+        if (group.color !== "blue") return;
+      } catch {
+      }
+    }
     if (settings.autoGrouping) {
       const existingGroup = await findAutoGroupForDomain(currentTab.windowId, domain);
       if (existingGroup) {
@@ -205,9 +256,10 @@
         if (sameDomainUngrouped.length >= 1) {
           const tabIds = [currentTab.id, ...sameDomainUngrouped.map((t) => t.id)];
           const groupId = await chrome.tabs.group({ tabIds });
+          const color = await getNextAvailableColor(currentTab.windowId);
           await chrome.tabGroups.update(groupId, {
             title: getShortName(domain),
-            color: "blue"
+            color
           });
         }
       }
@@ -219,11 +271,12 @@
     const groups = await chrome.tabGroups.query({ windowId: chrome.windows.WINDOW_ID_CURRENT });
     const otherGroup = groups.find((g) => g.title === "Other" && g.color === "grey");
     const otherGroupId = otherGroup?.id;
-    const autoGroupIds = new Set(groups.filter((g) => g.color === "blue").map((g) => g.id));
+    const customGroupTitles = new Set((settings.customGroups || []).map((g) => g.name));
+    const customGroupIds = new Set(groups.filter((g) => customGroupTitles.has(g.title)).map((g) => g.id));
     let hasWork = false;
     if (settings.customGrouping) {
       for (const tab of tabs) {
-        if (tab.groupId !== -1) continue;
+        if (tab.groupId !== -1 && tab.groupId !== otherGroupId && customGroupIds.has(tab.groupId)) continue;
         if (shouldSkipUrl(tab.url)) continue;
         const hostname = getHostname(tab.url);
         if (!hostname) continue;
@@ -245,7 +298,7 @@
         domainCounts.set(domain, (domainCounts.get(domain) || 0) + 1);
       }
       for (const [domain, count] of domainCounts) {
-        const existingGroup = groups.find((g) => g.title === getShortName(domain) && g.color === "blue");
+        const existingGroup = groups.find((g) => g.title === getShortName(domain));
         if (existingGroup || count >= 2) {
           hasWork = true;
           break;
@@ -256,7 +309,7 @@
     if (settings.customGrouping) {
       const customGroupBatches = /* @__PURE__ */ new Map();
       for (const tab of tabs) {
-        if (tab.groupId !== -1) continue;
+        if (tab.groupId !== -1 && tab.groupId !== otherGroupId && customGroupIds.has(tab.groupId)) continue;
         if (shouldSkipUrl(tab.url)) continue;
         const hostname = getHostname(tab.url);
         if (!hostname) continue;
@@ -274,6 +327,7 @@
         if (existingGroup) {
           await chrome.tabs.group({ tabIds, groupId: existingGroup.id });
         } else {
+          await ensureColorForCustomGroup(tabs[0].windowId, config.name, config.color);
           const groupId = await chrome.tabs.group({ tabIds });
           await chrome.tabGroups.update(groupId, { title: config.name, color: config.color });
         }
@@ -306,7 +360,8 @@
         } else if (domainTabs.length >= 2) {
           const tabIds = domainTabs.map((t) => t.id);
           const groupId = await chrome.tabs.group({ tabIds });
-          await chrome.tabGroups.update(groupId, { title: displayName, color: "blue" });
+          const color = await getNextAvailableColor(domainTabs[0].windowId);
+          await chrome.tabGroups.update(groupId, { title: displayName, color });
         }
       }
     }

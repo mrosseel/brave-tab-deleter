@@ -1,6 +1,6 @@
 (() => {
-  // shared.js
-  var TAB_COLORS = {
+  // lib/colors.js
+  var GROUP_COLORS = {
     grey: "#5f6368",
     blue: "#1a73e8",
     red: "#d93025",
@@ -12,8 +12,10 @@
     orange: "#e8710a"
   };
   function getColorHex(colorName) {
-    return TAB_COLORS[colorName] || TAB_COLORS.grey;
+    return GROUP_COLORS[colorName] || GROUP_COLORS.grey;
   }
+
+  // lib/domain.js
   function escapeHtml(text) {
     const div = document.createElement("div");
     div.textContent = text;

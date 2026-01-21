@@ -311,3 +311,130 @@ body {
 .tab-item.dragging .close-btn:hover {
   color: white;
 }
+
+/* Context menu styles */
+.context-menu {
+  display: none;
+  position: fixed;
+  background-color: var(--bg-color);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  min-width: 160px;
+  z-index: 1000;
+  padding: 4px 0;
+  /* Needed for absolute positioning of submenu in expand-up mode */
+  overflow: visible;
+}
+
+.context-menu.visible {
+  display: block;
+}
+
+.context-menu-item {
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 13px;
+  position: relative;
+}
+
+.context-menu-item:hover {
+  background-color: var(--hover-bg);
+}
+
+.context-menu-item.disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.context-menu-divider {
+  height: 1px;
+  background-color: var(--border-color);
+  margin: 4px 0;
+}
+
+.context-menu-has-submenu {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  position: relative;
+}
+
+.submenu-arrow {
+  font-size: 10px;
+  opacity: 0.6;
+  transition: transform 0.15s ease;
+}
+
+.context-menu-has-submenu.expanded .submenu-arrow {
+  transform: rotate(90deg);
+}
+
+.context-submenu {
+  display: none;
+  width: 100%;
+  background-color: var(--hover-bg);
+  padding: 4px 0;
+  margin-top: 4px;
+}
+
+.context-menu-has-submenu.expanded .context-submenu {
+  display: block;
+}
+
+/* When menu needs to expand upward, show submenu above the entire menu */
+.context-menu.expand-up .context-menu-has-submenu {
+  position: static;
+}
+
+.context-menu.expand-up .context-submenu {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  right: 0;
+  margin-top: 0;
+  margin-bottom: 4px;
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+  box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.context-menu.expand-up .submenu-arrow {
+  transform: rotate(-90deg);
+}
+
+.context-menu.expand-up .context-menu-has-submenu.expanded .submenu-arrow {
+  transform: rotate(90deg);
+}
+
+.context-submenu-item {
+  padding: 8px 12px 8px 20px;
+  cursor: pointer;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.context-submenu-item:hover {
+  background-color: var(--bg-color);
+}
+
+.submenu-color-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+@media (prefers-color-scheme: dark) {
+  .context-menu,
+  .context-submenu {
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  }
+
+  .context-menu.expand-up .context-submenu {
+    box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.4);
+  }
+}

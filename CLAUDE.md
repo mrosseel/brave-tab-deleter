@@ -15,7 +15,7 @@ Chrome/Brave extension for managing tabs via a sidebar panel with auto-grouping,
 - `background.js` - Service worker: handles tab grouping logic, settings, badge
 - `sidebar.js` - Sidebar UI: tab list, drag-drop, ghost groups, collapse/expand
 - `settings.js` - Settings page: auto-grouping toggle, custom groups CRUD
-- `shared.js` - Shared utilities (ES module): getDomain, getShortName, shouldSkipUrl, getColorHex
+- `lib/` - Shared utilities (ES modules): domain.js, colors.js, ghost.js, groups.js, lock.js, ordering.js, drag-position.js
 
 ### Key Concepts
 - **Auto-grouping**: Groups tabs by domain when 2+ tabs share same domain
@@ -44,7 +44,7 @@ Previous bug where duplicating a tab destroyed all groups. Fixed by:
 3. Removed concurrent init + sidebar-open auto-grouping race
 
 ## Development Workflow
-1. Edit source files (background.js, sidebar.js, settings.js, shared.js)
+1. Edit source files (`background.js`, `sidebar.js`, `settings.js`, `lib/*.js`)
 2. Run `npm run build`
 3. Reload extension in browser
 4. Check Service Worker console for "VERSION X LOADED" to confirm new code

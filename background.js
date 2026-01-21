@@ -1,8 +1,9 @@
 // Import shared utilities
-import { getDomain, getHostname, getShortName, shouldSkipUrl } from './shared.js';
+import { getDomain, getHostname, getShortName, shouldSkipUrl } from './lib/domain.js';
 import { createLock } from './lib/lock.js';
+import { findAvailableColor } from './lib/colors.js';
 
-console.log('=== BACKGROUND.JS VERSION 3 LOADED ===');
+console.log('=== BACKGROUND.JS VERSION 6 LOADED ===');
 
 // Track sidebar state per window
 const sidebarOpen = new Map();
@@ -72,16 +73,22 @@ async function updateBadge() {
 
 // Find matching custom group for a hostname
 function findCustomGroupForHostname(hostname) {
+  console.log('[bg] findCustomGroupForHostname:', hostname, 'customGrouping:', settings.customGrouping, 'groups:', settings.customGroups);
   if (!settings.customGrouping || !settings.customGroups) return null;
 
   for (const group of settings.customGroups) {
     for (const pattern of group.domains) {
       // Match exact hostname or hostname ending with .pattern
-      if (hostname === pattern || hostname.endsWith('.' + pattern)) {
+      const exactMatch = hostname === pattern;
+      const suffixMatch = hostname.endsWith('.' + pattern);
+      console.log('[bg] Checking pattern:', pattern, 'against:', hostname, 'exact:', exactMatch, 'suffix:', suffixMatch);
+      if (exactMatch || suffixMatch) {
+        console.log('[bg] MATCH! Returning group:', group.name);
         return group;
       }
     }
   }
+  console.log('[bg] No match found');
   return null;
 }
 
@@ -91,11 +98,42 @@ async function findGroupByTitleAndColor(windowId, title, color) {
   return groups.find(g => g.title === title && g.color === color);
 }
 
-// Find existing auto-created group for domain
+// Find existing auto-created group for domain (by title, any color)
 async function findAutoGroupForDomain(windowId, domain) {
   const expectedTitle = getShortName(domain);
   const groups = await chrome.tabGroups.query({ windowId });
-  return groups.find(g => g.title === expectedTitle && g.color === 'blue');
+  // Find by title - auto groups can have any color now
+  return groups.find(g => g.title === expectedTitle);
+}
+
+// Get colors reserved by custom groups
+function getCustomGroupColors() {
+  if (!settings.customGrouping || !settings.customGroups) return new Set();
+  return new Set(settings.customGroups.map(g => g.color));
+}
+
+// Find next available color not used by existing groups
+async function getNextAvailableColor(windowId) {
+  const groups = await chrome.tabGroups.query({ windowId });
+  const usedColors = new Set(groups.map(g => g.color));
+  return findAvailableColor(usedColors, getCustomGroupColors());
+}
+
+// Ensure custom group gets its color - swap with existing group if needed
+async function ensureColorForCustomGroup(windowId, customGroupTitle, desiredColor) {
+  const groups = await chrome.tabGroups.query({ windowId });
+  const conflictingGroup = groups.find(g => g.color === desiredColor && g.title !== customGroupTitle);
+
+  if (conflictingGroup) {
+    const usedColors = new Set(groups.map(g => g.color));
+    usedColors.add(desiredColor); // Reserve the desired color
+    const newColor = findAvailableColor(usedColors, getCustomGroupColors());
+
+    if (newColor !== desiredColor) {
+      console.log(`[bg] Swapping color: ${conflictingGroup.title} from ${desiredColor} to ${newColor}`);
+      await chrome.tabGroups.update(conflictingGroup.id, { color: newColor });
+    }
+  }
 }
 
 // Core grouping logic - groups a single tab appropriately
@@ -124,6 +162,8 @@ async function groupSingleTab(tab) {
       if (existingGroup && currentTab.groupId !== existingGroup.id) {
         await chrome.tabs.group({ tabIds: currentTab.id, groupId: existingGroup.id });
       } else if (!existingGroup) {
+        // Ensure custom group gets its color (swap if needed)
+        await ensureColorForCustomGroup(currentTab.windowId, customGroup.name, customGroup.color);
         const groupId = await chrome.tabs.group({ tabIds: currentTab.id });
         await chrome.tabGroups.update(groupId, { title: customGroup.name, color: customGroup.color });
       }
@@ -131,8 +171,16 @@ async function groupSingleTab(tab) {
     }
   }
 
-  // Skip if already in a group (don't move between auto-groups)
-  if (currentTab.groupId !== -1) return;
+  // Skip if already in a non-auto group (custom group protection)
+  if (currentTab.groupId !== -1) {
+    try {
+      const group = await chrome.tabGroups.get(currentTab.groupId);
+      // Only skip if it's a custom group (not blue/auto-created)
+      if (group.color !== 'blue') return;
+    } catch {
+      // Group doesn't exist, continue
+    }
+  }
 
   // Auto-grouping by domain
   if (settings.autoGrouping) {
@@ -153,9 +201,10 @@ async function groupSingleTab(tab) {
         // 2+ tabs with same domain (this one + at least 1 other) - create group
         const tabIds = [currentTab.id, ...sameDomainUngrouped.map(t => t.id)];
         const groupId = await chrome.tabs.group({ tabIds });
+        const color = await getNextAvailableColor(currentTab.windowId);
         await chrome.tabGroups.update(groupId, {
           title: getShortName(domain),
-          color: 'blue'
+          color
         });
       }
       // If only 1 tab, leave it ungrouped for now
@@ -170,18 +219,20 @@ async function applyAutoGroupingToAll() {
   const tabs = await chrome.tabs.query({ currentWindow: true });
   const groups = await chrome.tabGroups.query({ windowId: chrome.windows.WINDOW_ID_CURRENT });
 
-  // Find "Other" group and auto-created groups (blue)
+  // Find "Other" group and identify custom groups by title
   const otherGroup = groups.find(g => g.title === 'Other' && g.color === 'grey');
   const otherGroupId = otherGroup?.id;
-  const autoGroupIds = new Set(groups.filter(g => g.color === 'blue').map(g => g.id));
+  const customGroupTitles = new Set((settings.customGroups || []).map(g => g.name));
+  const customGroupIds = new Set(groups.filter(g => customGroupTitles.has(g.title)).map(g => g.id));
 
   // First, check if there's any work to do
   let hasWork = false;
 
-  // Check custom grouping work (only ungrouped tabs)
+  // Check custom grouping work (ungrouped, "Other", and auto-created groups)
   if (settings.customGrouping) {
     for (const tab of tabs) {
-      if (tab.groupId !== -1) continue;
+      // Skip tabs already in custom groups
+      if (tab.groupId !== -1 && tab.groupId !== otherGroupId && customGroupIds.has(tab.groupId)) continue;
       if (shouldSkipUrl(tab.url)) continue;
       const hostname = getHostname(tab.url);
       if (!hostname) continue;
@@ -205,7 +256,7 @@ async function applyAutoGroupingToAll() {
       domainCounts.set(domain, (domainCounts.get(domain) || 0) + 1);
     }
     for (const [domain, count] of domainCounts) {
-      const existingGroup = groups.find(g => g.title === getShortName(domain) && g.color === 'blue');
+      const existingGroup = groups.find(g => g.title === getShortName(domain));
       if (existingGroup || count >= 2) {
         hasWork = true;
         break;
@@ -215,13 +266,15 @@ async function applyAutoGroupingToAll() {
 
   if (!hasWork) return;
 
-  // First pass: handle custom groups (ONLY ungrouped tabs - never move from existing groups)
+  // First pass: handle custom groups (ungrouped, "Other", and auto-created groups)
   if (settings.customGrouping) {
     // Batch tabs by custom group
     const customGroupBatches = new Map(); // groupKey -> { config, tabIds }
 
     for (const tab of tabs) {
-      if (tab.groupId !== -1) continue;
+      // Allow ungrouped tabs, "Other" group, and auto-created groups
+      // Skip tabs already in custom groups
+      if (tab.groupId !== -1 && tab.groupId !== otherGroupId && customGroupIds.has(tab.groupId)) continue;
       if (shouldSkipUrl(tab.url)) continue;
 
       const hostname = getHostname(tab.url);
@@ -243,6 +296,8 @@ async function applyAutoGroupingToAll() {
       if (existingGroup) {
         await chrome.tabs.group({ tabIds, groupId: existingGroup.id });
       } else {
+        // Ensure custom group gets its color (swap if needed)
+        await ensureColorForCustomGroup(tabs[0].windowId, config.name, config.color);
         const groupId = await chrome.tabs.group({ tabIds });
         await chrome.tabGroups.update(groupId, { title: config.name, color: config.color });
       }
@@ -288,7 +343,8 @@ async function applyAutoGroupingToAll() {
       } else if (domainTabs.length >= 2) {
         const tabIds = domainTabs.map(t => t.id);
         const groupId = await chrome.tabs.group({ tabIds });
-        await chrome.tabGroups.update(groupId, { title: displayName, color: 'blue' });
+        const color = await getNextAvailableColor(domainTabs[0].windowId);
+        await chrome.tabGroups.update(groupId, { title: displayName, color });
       }
     }
   }
