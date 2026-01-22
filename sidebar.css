@@ -454,3 +454,66 @@ body {
     box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.4);
   }
 }
+
+/* Sleeping group - greyed out appearance */
+.tab-group.sleeping-group {
+  opacity: 0.6;
+}
+
+.tab-group.sleeping-group .group-header {
+  cursor: default;
+}
+
+/* "(sleeping)" label after group name */
+.tab-group.sleeping-group .group-name::after {
+  content: ' (sleeping)';
+  font-weight: normal;
+  font-size: 10px;
+  opacity: 0.7;
+  text-transform: none;
+}
+
+/* Sleep button - same dimensions as close button */
+.group-header .sleep-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border: none;
+  background: transparent;
+  color: var(--close-btn-color);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  border-radius: 3px;
+  visibility: hidden;
+  opacity: 0;
+}
+
+.group-header:hover .sleep-btn {
+  visibility: visible;
+  opacity: 0.7;
+}
+
+.group-header .sleep-btn:hover {
+  opacity: 1;
+  background-color: rgba(128, 128, 128, 0.2);
+}
+
+/* Always visible on sleeping groups (wake button) */
+.tab-group.sleeping-group .sleep-btn {
+  visibility: visible;
+  opacity: 0.8;
+}
+
+/* Sleeping tabs - non-interactive preview */
+.sleeping-tabs .tab-item {
+  pointer-events: none;
+  opacity: 0.6;
+  cursor: default;
+}
+
+.sleeping-tabs .tab-item .close-btn {
+  display: none;
+}

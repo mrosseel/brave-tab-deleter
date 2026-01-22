@@ -24,6 +24,8 @@ Groups can be sorted using the sort button in the header. Available sort options
 - **By Tab Count**: Groups with most tabs first
 - **Custom Groups First**: Custom groups at top, then auto-groups
 
+Sleeping groups are always sorted last, regardless of the selected sort option.
+
 Sort preference is persisted in settings.
 
 ### Tab Groups Display
@@ -31,9 +33,12 @@ Groups displayed according to current sort setting. Each group shows:
 - Collapse/expand chevron icon
 - Group name (uppercase)
 - Tab count in parentheses
+- Sleep button (Zzz icon on hover) - toggles group sleep state
 - Close group button (× on hover) - closes all tabs in group
 
 Groups have a colored left border matching Chrome's tab group colors.
+
+Sleeping groups appear greyed out with the same structure but no active tabs.
 
 ### Individual Tabs
 Each tab displays:
@@ -118,7 +123,7 @@ Temporary visual feedback when removing a tab from a 2-tab group:
 ### Group Drag & Drop
 - Drag group header to reorder groups
 - All tabs in group move together
-- Cannot drag "Other" section or ghost groups
+- Cannot drag "Other" section, ghost groups, or sleeping groups
 
 ### Visual Feedback
 - Dragged tab: Highlighted/bright appearance with color glow (stands out from other tabs)
@@ -183,6 +188,38 @@ These URLs are never grouped or shown in sidebar:
 - Supports system light/dark mode via `prefers-color-scheme`
 - Both sidebar and settings adapt colors automatically
 
+## 12. Group Sleep
+
+Allows temporarily "sleeping" a group to free resources while preserving its tabs for later.
+
+### Activation
+- Sleep icon (Zzz) displayed on each group header
+- Click to toggle sleep state
+
+### Sleep Behavior
+When a group is put to sleep:
+- The real Chrome tab group is deleted
+- All tabs in the group are closed
+- Group metadata saved to local storage: name, color, tab URLs, tab titles
+- Group appears greyed out in sidebar (visual sleep indicator)
+- Sleeping groups are always sorted last, regardless of sort setting
+
+### Wake Behavior
+When a sleeping group is woken:
+- All tabs are recreated from stored URLs
+- Chrome tab group is recreated with original name and color
+- Tabs are added to the recreated group
+- Group returns to normal appearance and sorting
+
+### Persistence
+- Sleeping groups persist across browser sessions (stored in chrome.storage.local)
+- Sleeping groups are window-agnostic: can be woken in any window
+
+### Restrictions
+- Cannot sleep the "Other" section
+- Cannot sleep ghost groups
+- Cannot drag tabs into or out of sleeping groups
+
 ---
 
 # Technical Considerations
@@ -213,6 +250,7 @@ All grouping operations use a global lock (`withGroupingLock()`) to prevent conc
 |------|----------|
 | chrome.storage.sync | Settings (persists across devices) |
 | chrome.storage.session | Ghost groups (persists within session) |
+| chrome.storage.local | Sleeping groups (persists across sessions) |
 
 ## Inter-Component Communication
 - Sidebar sends `sidebarOpened` message to background

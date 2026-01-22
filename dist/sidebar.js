@@ -69,10 +69,46 @@
     return Math.max(0, Math.ceil((ghost.expiresAt - now) / 1e3));
   }
 
+  // lib/sleep.js
+  function createSleepingGroupEntry(groupInfo, tabs, windowId) {
+    const id = `sleep-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    return {
+      id,
+      title: groupInfo.title || "Unnamed Group",
+      color: groupInfo.color || "grey",
+      tabs: tabs.map((tab) => ({
+        url: tab.url,
+        title: tab.title || tab.url || "New Tab",
+        favIconUrl: tab.favIconUrl || null
+      })),
+      sleepedAt: Date.now(),
+      originalWindowId: windowId
+    };
+  }
+  function isValidSleepingGroup(entry) {
+    if (!entry || typeof entry !== "object") return false;
+    if (typeof entry.id !== "string" || !entry.id.startsWith("sleep-")) return false;
+    if (typeof entry.title !== "string") return false;
+    if (typeof entry.color !== "string") return false;
+    if (!Array.isArray(entry.tabs) || entry.tabs.length === 0) return false;
+    if (typeof entry.sleepedAt !== "number") return false;
+    for (const tab of entry.tabs) {
+      if (!tab || typeof tab !== "object") return false;
+      if (typeof tab.url !== "string" || !tab.url) return false;
+    }
+    return true;
+  }
+  function canSleepGroup(groupId) {
+    if (groupId === "ungrouped") return false;
+    if (typeof groupId === "string" && groupId.startsWith("ghost-")) return false;
+    const numId = typeof groupId === "string" ? parseInt(groupId, 10) : groupId;
+    return !isNaN(numId) && numId > 0;
+  }
+
   // lib/storage.js
   async function loadFromStorage(area, key, defaultValue = null) {
     try {
-      const storage = area === "sync" ? chrome.storage.sync : chrome.storage.session;
+      const storage = area === "sync" ? chrome.storage.sync : area === "session" ? chrome.storage.session : chrome.storage.local;
       const result = await storage.get(key);
       return result[key] !== void 0 ? result[key] : defaultValue;
     } catch (e) {
@@ -82,7 +118,7 @@
   }
   async function saveToStorage(area, key, value) {
     try {
-      const storage = area === "sync" ? chrome.storage.sync : chrome.storage.session;
+      const storage = area === "sync" ? chrome.storage.sync : area === "session" ? chrome.storage.session : chrome.storage.local;
       await storage.set({ [key]: value });
       return true;
     } catch (e) {
@@ -237,6 +273,7 @@
   var originalGroupNextSibling = null;
   var otherCollapsed = false;
   var ghostGroups = /* @__PURE__ */ new Map();
+  var sleepingGroups = /* @__PURE__ */ new Map();
   var groupMemberships = /* @__PURE__ */ new Map();
   async function loadGhostGroups() {
     const stored = await loadFromStorage("session", "ghostGroups", []);
@@ -244,6 +281,54 @@
   }
   async function saveGhostGroups() {
     await saveToStorage("session", "ghostGroups", [...ghostGroups.entries()]);
+  }
+  async function loadSleepingGroups() {
+    const stored = await loadFromStorage("local", "sleepingGroups", []);
+    sleepingGroups = /* @__PURE__ */ new Map();
+    for (const [id, entry] of stored) {
+      if (isValidSleepingGroup(entry)) {
+        sleepingGroups.set(id, entry);
+      }
+    }
+  }
+  async function saveSleepingGroups() {
+    await saveToStorage("local", "sleepingGroups", [...sleepingGroups.entries()]);
+  }
+  async function sleepGroup(groupId, groupInfo, tabs) {
+    const windowId = tabs.length > 0 ? tabs[0].windowId : chrome.windows.WINDOW_ID_CURRENT;
+    const entry = createSleepingGroupEntry(groupInfo, tabs, windowId);
+    sleepingGroups.set(entry.id, entry);
+    await saveSleepingGroups();
+    const tabIds = tabs.map((t) => t.id);
+    await chrome.tabs.remove(tabIds);
+    render("sleep-group");
+  }
+  async function wakeGroup(sleepId) {
+    const entry = sleepingGroups.get(sleepId);
+    if (!entry) return;
+    sleepingGroups.delete(sleepId);
+    await saveSleepingGroups();
+    const createdTabIds = [];
+    for (const tabData of entry.tabs) {
+      try {
+        const tab = await chrome.tabs.create({ url: tabData.url, active: false });
+        createdTabIds.push(tab.id);
+      } catch (e) {
+        console.error("Failed to create tab:", tabData.url, e);
+      }
+    }
+    if (createdTabIds.length > 0) {
+      try {
+        const groupId = await chrome.tabs.group({ tabIds: createdTabIds });
+        await chrome.tabGroups.update(groupId, {
+          title: entry.title,
+          color: entry.color
+        });
+      } catch (e) {
+        console.error("Failed to group woken tabs:", e);
+      }
+    }
+    render("wake-group");
   }
   async function updateGroupMemberships() {
     const tabs = await chrome.tabs.query({ currentWindow: true });
@@ -341,6 +426,10 @@
       return `${t.id}:${ghost?.title}:${ghost?.color}`;
     }).join(",");
     parts.push(`gh:${ghostIds}`);
+    const sleepingIds = [...sleepingGroups.values()].map(
+      (s) => `${s.id}:${s.title}:${s.color}:${s.tabs.length}`
+    ).join(",");
+    parts.push(`sl:${sleepingIds}`);
     return parts.join("|");
   }
   function getGroupColor(group) {
@@ -576,11 +665,13 @@
     }
     return null;
   }
-  function createGroupHeader(groupInfo, isGhost, isUngrouped, ghostExpiresAt, tabs) {
+  function createGroupHeader(groupInfo, isGhost, isUngrouped, ghostExpiresAt, tabs, groupId, isSleeping = false, sleepId = null) {
     const isCollapsed = groupInfo?.collapsed || false;
     const header = document.createElement("div");
     header.className = "group-header" + (isCollapsed ? " collapsed" : "");
     if (isGhost && groupInfo) {
+      header.style.borderLeftColor = getColorHex(groupInfo.color);
+    } else if (isSleeping && groupInfo) {
       header.style.borderLeftColor = getColorHex(groupInfo.color);
     } else {
       header.style.borderLeftColor = groupInfo ? getGroupColor(groupInfo) : "#888";
@@ -592,16 +683,18 @@
     groupName.className = "group-name";
     if (isGhost && groupInfo) {
       groupName.textContent = groupInfo.title || "Unnamed Group";
+    } else if (isSleeping && groupInfo) {
+      groupName.textContent = groupInfo.title || "Unnamed Group";
     } else {
       groupName.textContent = groupInfo ? groupInfo.title || "Unnamed Group" : "Ungrouped";
     }
-    const rightSection = createHeaderRightSection(isGhost, ghostExpiresAt, isUngrouped, tabs);
+    const rightSection = createHeaderRightSection(isGhost, ghostExpiresAt, isUngrouped, tabs, groupId, groupInfo, isSleeping, sleepId);
     header.appendChild(collapseIcon);
     header.appendChild(groupName);
     header.appendChild(rightSection);
     return header;
   }
-  function createHeaderRightSection(isGhost, ghostExpiresAt, isUngrouped, tabs) {
+  function createHeaderRightSection(isGhost, ghostExpiresAt, isUngrouped, tabs, groupId, groupInfo, isSleeping, sleepId) {
     const rightSection = document.createElement("span");
     rightSection.className = "header-right";
     if (isGhost && ghostExpiresAt) {
@@ -612,20 +705,43 @@
       countdownEl.title = "Tab will move to Other when timer expires";
       rightSection.appendChild(countdownEl);
     }
-    const closeGroupBtn = document.createElement("button");
-    closeGroupBtn.className = "close-group-btn";
-    closeGroupBtn.innerHTML = "&times;";
-    closeGroupBtn.title = isUngrouped ? "Close all ungrouped tabs" : "Close all tabs in group";
-    closeGroupBtn.addEventListener("click", async (e) => {
-      e.stopPropagation();
-      const scrollTop = document.documentElement.scrollTop || document.body.scrollTop;
-      const tabIds = tabs.map((t) => t.id);
-      tabIds.forEach((id) => ghostGroups.delete(id));
-      saveGhostGroups();
-      await chrome.tabs.remove(tabIds);
-      window.scrollTo(0, scrollTop);
-    });
-    rightSection.appendChild(closeGroupBtn);
+    if (!isUngrouped && !isGhost) {
+      const sleepBtn = document.createElement("button");
+      sleepBtn.className = "sleep-btn";
+      sleepBtn.textContent = "Zzz";
+      if (isSleeping) {
+        sleepBtn.title = "Wake group (restore tabs)";
+        sleepBtn.addEventListener("click", async (e) => {
+          e.stopPropagation();
+          await wakeGroup(sleepId);
+        });
+      } else {
+        sleepBtn.title = "Sleep group (close tabs, save for later)";
+        sleepBtn.addEventListener("click", async (e) => {
+          e.stopPropagation();
+          if (canSleepGroup(groupId)) {
+            await sleepGroup(groupId, groupInfo, tabs);
+          }
+        });
+      }
+      rightSection.appendChild(sleepBtn);
+    }
+    if (!isSleeping) {
+      const closeGroupBtn = document.createElement("button");
+      closeGroupBtn.className = "close-group-btn";
+      closeGroupBtn.innerHTML = "&times;";
+      closeGroupBtn.title = isUngrouped ? "Close all ungrouped tabs" : "Close all tabs in group";
+      closeGroupBtn.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        const scrollTop = document.documentElement.scrollTop || document.body.scrollTop;
+        const tabIds = tabs.map((t) => t.id);
+        tabIds.forEach((id) => ghostGroups.delete(id));
+        saveGhostGroups();
+        await chrome.tabs.remove(tabIds);
+        window.scrollTo(0, scrollTop);
+      });
+      rightSection.appendChild(closeGroupBtn);
+    }
     const tabCount = document.createElement("span");
     tabCount.className = "tab-count";
     tabCount.textContent = `(${tabs.length})`;
@@ -680,6 +796,36 @@
     });
     return tabsContainer;
   }
+  function createSleepingTabsPreview(tabs) {
+    const tabsContainer = document.createElement("div");
+    tabsContainer.className = "group-tabs sleeping-tabs";
+    tabs.forEach((tabData) => {
+      const div = document.createElement("div");
+      div.className = "tab-item";
+      const faviconWrapper = document.createElement("div");
+      faviconWrapper.className = "favicon-wrapper";
+      const favicon = document.createElement("img");
+      favicon.className = "favicon";
+      if (tabData.favIconUrl && !tabData.favIconUrl.startsWith("chrome://")) {
+        favicon.src = tabData.favIconUrl;
+      } else {
+        favicon.className = "favicon placeholder";
+      }
+      favicon.onerror = () => {
+        favicon.className = "favicon placeholder";
+        favicon.src = "";
+      };
+      faviconWrapper.appendChild(favicon);
+      const title = document.createElement("span");
+      title.className = "tab-title";
+      title.textContent = tabData.title || tabData.url || "New Tab";
+      title.title = tabData.title || tabData.url || "New Tab";
+      div.appendChild(faviconWrapper);
+      div.appendChild(title);
+      tabsContainer.appendChild(div);
+    });
+    return tabsContainer;
+  }
   function setupCollapseHandler(header, tabsContainer, groupInfo, isUngrouped) {
     header.addEventListener("click", async (e) => {
       if (e.target.closest(".close-group-btn")) return;
@@ -700,15 +846,27 @@
       }
     });
   }
-  function createGroupElement(groupId, groupInfo, tabs, isUngrouped = false, isGhost = false, ghostExpiresAt = null, positionIndex = 0) {
+  function createGroupElement(groupId, groupInfo, tabs, isUngrouped = false, isGhost = false, ghostExpiresAt = null, positionIndex = 0, isSleeping = false, sleepId = null) {
     const container = document.createElement("div");
-    container.className = "tab-group" + (isGhost ? " ghost-group" : "");
+    let className = "tab-group";
+    if (isGhost) className += " ghost-group";
+    if (isSleeping) className += " sleeping-group";
+    container.className = className;
     container.dataset.groupId = groupId;
-    container.draggable = true;
-    setupGroupDragHandlers(container, groupId, tabs, groupInfo);
-    const header = createGroupHeader(groupInfo, isGhost, isUngrouped, ghostExpiresAt, tabs);
-    const tabsContainer = createTabsContainer(tabs, groupInfo, isGhost, isUngrouped, positionIndex);
-    setupCollapseHandler(header, tabsContainer, groupInfo, isUngrouped);
+    if (!isSleeping) {
+      container.draggable = true;
+      setupGroupDragHandlers(container, groupId, tabs, groupInfo);
+    }
+    const header = createGroupHeader(groupInfo, isGhost, isUngrouped, ghostExpiresAt, tabs, groupId, isSleeping, sleepId);
+    let tabsContainer;
+    if (isSleeping) {
+      tabsContainer = createSleepingTabsPreview(tabs);
+    } else {
+      tabsContainer = createTabsContainer(tabs, groupInfo, isGhost, isUngrouped, positionIndex);
+    }
+    if (!isSleeping) {
+      setupCollapseHandler(header, tabsContainer, groupInfo, isUngrouped);
+    }
     container.appendChild(header);
     container.appendChild(tabsContainer);
     return container;
@@ -754,6 +912,14 @@
         });
       }
     }
+    for (const [sleepId, entry] of sleepingGroups) {
+      renderItems.push({
+        type: "sleeping",
+        sleepId,
+        entry,
+        firstTabIndex: Infinity
+      });
+    }
     renderItems.sort((a, b) => a.firstTabIndex - b.firstTabIndex);
     renderItems.forEach((item, index) => {
       if (item.type === "real") {
@@ -776,7 +942,7 @@
           null,
           index
         ));
-      } else {
+      } else if (item.type === "ghost") {
         const ghostId = `ghost-${item.tab.id}`;
         const fakeGroupInfo = { title: item.ghost.title, color: item.ghost.color };
         tabListEl.appendChild(createGroupElement(
@@ -788,12 +954,26 @@
           item.ghost.expiresAt,
           index
         ));
+      } else if (item.type === "sleeping") {
+        const groupInfo = { title: item.entry.title, color: item.entry.color };
+        tabListEl.appendChild(createGroupElement(
+          item.sleepId,
+          groupInfo,
+          item.entry.tabs,
+          false,
+          false,
+          null,
+          index,
+          true,
+          item.sleepId
+        ));
       }
     });
     window.scrollTo(0, scrollTop);
   }
   (async () => {
     await loadGhostGroups();
+    await loadSleepingGroups();
     chrome.runtime.sendMessage({ type: "sidebarOpened" });
     await new Promise((r) => setTimeout(r, 100));
     await updateGroupMemberships();
