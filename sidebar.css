@@ -312,6 +312,14 @@ body {
   color: white;
 }
 
+/* Audio indicator */
+.audio-indicator {
+  font-size: 12px;
+  margin-left: 6px;
+  opacity: 0.8;
+  flex-shrink: 0;
+}
+
 /* Context menu styles */
 .context-menu {
   display: none;

@@ -456,6 +456,13 @@
     div.appendChild(closeBtn);
     div.appendChild(favicon);
     div.appendChild(title);
+    if (tab.audible) {
+      const audioIcon = document.createElement("span");
+      audioIcon.className = "audio-indicator";
+      audioIcon.innerHTML = "\u{1F50A}";
+      audioIcon.title = "Playing audio";
+      div.appendChild(audioIcon);
+    }
     div.addEventListener("click", () => {
       chrome.tabs.update(tab.id, { active: true });
     });
