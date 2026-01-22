@@ -127,6 +127,53 @@
     customGroups: []
   };
   var tabActivationTimes = /* @__PURE__ */ new Map();
+  var autoGroupIds = /* @__PURE__ */ new Set();
+  async function loadAutoGroupIds() {
+    const stored = await chrome.storage.session.get("autoGroupIds");
+    autoGroupIds = new Set(stored.autoGroupIds || []);
+  }
+  async function saveAutoGroupIds() {
+    await chrome.storage.session.set({ autoGroupIds: [...autoGroupIds] });
+  }
+  function markAsAutoGroup(groupId) {
+    autoGroupIds.add(groupId);
+    saveAutoGroupIds();
+  }
+  function isAutoGroupId(groupId) {
+    return autoGroupIds.has(groupId);
+  }
+  async function checkAndUpdateGroupStatus(groupId) {
+    try {
+      const group = await chrome.tabGroups.get(groupId);
+      const tabs = await chrome.tabs.query({ groupId });
+      if (tabs.length < 2) {
+        if (isAutoGroupId(groupId)) {
+          autoGroupIds.delete(groupId);
+          saveAutoGroupIds();
+        }
+        return false;
+      }
+      const firstDomain = getDomain(tabs[0].url);
+      const allSameDomain = tabs.every((t) => getDomain(t.url) === firstDomain);
+      const titleMatches = group.title === getShortName(firstDomain);
+      if (allSameDomain && titleMatches) {
+        if (!isAutoGroupId(groupId)) {
+          markAsAutoGroup(groupId);
+        }
+        return true;
+      } else {
+        if (isAutoGroupId(groupId)) {
+          autoGroupIds.delete(groupId);
+          saveAutoGroupIds();
+        }
+        return false;
+      }
+    } catch {
+      autoGroupIds.delete(groupId);
+      saveAutoGroupIds();
+      return false;
+    }
+  }
   var withGroupingLock = createLock();
   async function loadSettings() {
     const stored = await chrome.storage.sync.get("settings");
@@ -227,9 +274,11 @@
       const customGroup = findCustomGroupForHostname(hostname);
       if (customGroup) {
         const existingGroup = await findGroupByTitleAndColor(currentTab.windowId, customGroup.name, customGroup.color);
-        if (existingGroup && currentTab.groupId !== existingGroup.id) {
-          await chrome.tabs.group({ tabIds: currentTab.id, groupId: existingGroup.id });
-        } else if (!existingGroup) {
+        if (existingGroup) {
+          if (currentTab.groupId !== existingGroup.id) {
+            await chrome.tabs.group({ tabIds: currentTab.id, groupId: existingGroup.id });
+          }
+        } else {
           await ensureColorForCustomGroup(currentTab.windowId, customGroup.name, customGroup.color);
           const groupId = await chrome.tabs.group({ tabIds: currentTab.id });
           await chrome.tabGroups.update(groupId, { title: customGroup.name, color: customGroup.color });
@@ -237,31 +286,44 @@
         return;
       }
     }
-    if (currentTab.groupId !== -1) {
-      try {
-        const group = await chrome.tabGroups.get(currentTab.groupId);
-        if (group.color !== "blue") return;
-      } catch {
+    if (settings.autoGrouping) {
+      const existingAutoGroup = await findAutoGroupForDomain(currentTab.windowId, domain);
+      if (existingAutoGroup) {
+        if (currentTab.groupId !== existingAutoGroup.id) {
+          await chrome.tabs.group({ tabIds: currentTab.id, groupId: existingAutoGroup.id });
+        }
+        return;
+      }
+      const allTabs = await chrome.tabs.query({ windowId: currentTab.windowId });
+      const sameDomainTabs = allTabs.filter(
+        (t) => t.id !== currentTab.id && t.groupId === -1 && getDomain(t.url) === domain
+      );
+      if (sameDomainTabs.length >= 1) {
+        const tabIds = [currentTab.id, ...sameDomainTabs.map((t) => t.id)];
+        const groupId = await chrome.tabs.group({ tabIds });
+        const color = await getNextAvailableColor(currentTab.windowId);
+        await chrome.tabGroups.update(groupId, { title: getShortName(domain), color });
+        markAsAutoGroup(groupId);
+        return;
       }
     }
-    if (settings.autoGrouping) {
-      const existingGroup = await findAutoGroupForDomain(currentTab.windowId, domain);
-      if (existingGroup) {
-        await chrome.tabs.group({ tabIds: currentTab.id, groupId: existingGroup.id });
-      } else {
-        const allTabs = await chrome.tabs.query({ windowId: currentTab.windowId });
-        const sameDomainUngrouped = allTabs.filter(
-          (t) => t.id !== currentTab.id && t.groupId === -1 && getDomain(t.url) === domain
-        );
-        if (sameDomainUngrouped.length >= 1) {
-          const tabIds = [currentTab.id, ...sameDomainUngrouped.map((t) => t.id)];
-          const groupId = await chrome.tabs.group({ tabIds });
-          const color = await getNextAvailableColor(currentTab.windowId);
-          await chrome.tabGroups.update(groupId, {
-            title: getShortName(domain),
-            color
-          });
+    if (currentTab.groupId !== -1) {
+      const groupId = currentTab.groupId;
+      const groupTabs = await chrome.tabs.query({ groupId });
+      const otherTabs = groupTabs.filter((t) => t.id !== currentTab.id);
+      if (otherTabs.length > 0) {
+        const otherDomains = new Set(otherTabs.map((t) => getDomain(t.url)));
+        if (otherDomains.size > 1) {
+          if (isAutoGroupId(groupId)) {
+            autoGroupIds.delete(groupId);
+            saveAutoGroupIds();
+          }
+          return;
         }
+      }
+      await chrome.tabs.ungroup(currentTab.id);
+      if (otherTabs.length >= 2) {
+        await checkAndUpdateGroupStatus(groupId);
       }
     }
   }
@@ -362,6 +424,7 @@
           const groupId = await chrome.tabs.group({ tabIds });
           const color = await getNextAvailableColor(domainTabs[0].windowId);
           await chrome.tabGroups.update(groupId, { title: displayName, color });
+          markAsAutoGroup(groupId);
         }
       }
     }
@@ -405,6 +468,12 @@
   chrome.tabs.onRemoved.addListener((tabId) => {
     tabActivationTimes.delete(tabId);
   });
+  chrome.tabGroups.onRemoved.addListener((group) => {
+    if (autoGroupIds.has(group.id)) {
+      autoGroupIds.delete(group.id);
+      saveAutoGroupIds();
+    }
+  });
   setInterval(() => {
     if (settings.autoOrdering) {
       chrome.tabs.query({ active: true, currentWindow: true }).then((tabs) => {
@@ -414,6 +483,7 @@
   }, 1e3);
   async function init() {
     await loadSettings();
+    await loadAutoGroupIds();
     updateBadge();
   }
   init();

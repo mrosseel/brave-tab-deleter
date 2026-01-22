@@ -20,6 +20,64 @@ let settings = {
 // Track tab activation times for auto-ordering
 const tabActivationTimes = new Map();
 
+// Track auto group IDs we created (session storage - clears on browser restart)
+let autoGroupIds = new Set();
+
+async function loadAutoGroupIds() {
+  const stored = await chrome.storage.session.get('autoGroupIds');
+  autoGroupIds = new Set(stored.autoGroupIds || []);
+}
+
+async function saveAutoGroupIds() {
+  await chrome.storage.session.set({ autoGroupIds: [...autoGroupIds] });
+}
+
+function markAsAutoGroup(groupId) {
+  autoGroupIds.add(groupId);
+  saveAutoGroupIds();
+}
+
+function isAutoGroupId(groupId) {
+  return autoGroupIds.has(groupId);
+}
+
+// Check if a group qualifies as auto (all tabs same domain, title matches)
+async function checkAndUpdateGroupStatus(groupId) {
+  try {
+    const group = await chrome.tabGroups.get(groupId);
+    const tabs = await chrome.tabs.query({ groupId });
+
+    if (tabs.length < 2) {
+      if (isAutoGroupId(groupId)) {
+        autoGroupIds.delete(groupId);
+        saveAutoGroupIds();
+      }
+      return false;
+    }
+
+    const firstDomain = getDomain(tabs[0].url);
+    const allSameDomain = tabs.every(t => getDomain(t.url) === firstDomain);
+    const titleMatches = group.title === getShortName(firstDomain);
+
+    if (allSameDomain && titleMatches) {
+      if (!isAutoGroupId(groupId)) {
+        markAsAutoGroup(groupId);
+      }
+      return true;
+    } else {
+      if (isAutoGroupId(groupId)) {
+        autoGroupIds.delete(groupId);
+        saveAutoGroupIds();
+      }
+      return false;
+    }
+  } catch {
+    autoGroupIds.delete(groupId);
+    saveAutoGroupIds();
+    return false;
+  }
+}
+
 // SINGLE GLOBAL LOCK for all grouping operations
 const withGroupingLock = createLock();
 
@@ -151,18 +209,19 @@ async function groupSingleTab(tab) {
     return; // Tab no longer exists
   }
 
-  // Check custom grouping first
   const hostname = getHostname(tab.url);
+
+  // 1. Check custom groups first (highest priority)
   if (settings.customGrouping && hostname) {
     const customGroup = findCustomGroupForHostname(hostname);
     if (customGroup) {
       const existingGroup = await findGroupByTitleAndColor(currentTab.windowId, customGroup.name, customGroup.color);
 
-      // Move to custom group if not already there
-      if (existingGroup && currentTab.groupId !== existingGroup.id) {
-        await chrome.tabs.group({ tabIds: currentTab.id, groupId: existingGroup.id });
-      } else if (!existingGroup) {
-        // Ensure custom group gets its color (swap if needed)
+      if (existingGroup) {
+        if (currentTab.groupId !== existingGroup.id) {
+          await chrome.tabs.group({ tabIds: currentTab.id, groupId: existingGroup.id });
+        }
+      } else {
         await ensureColorForCustomGroup(currentTab.windowId, customGroup.name, customGroup.color);
         const groupId = await chrome.tabs.group({ tabIds: currentTab.id });
         await chrome.tabGroups.update(groupId, { title: customGroup.name, color: customGroup.color });
@@ -171,43 +230,65 @@ async function groupSingleTab(tab) {
     }
   }
 
-  // Skip if already in a non-auto group (custom group protection)
-  if (currentTab.groupId !== -1) {
-    try {
-      const group = await chrome.tabGroups.get(currentTab.groupId);
-      // Only skip if it's a custom group (not blue/auto-created)
-      if (group.color !== 'blue') return;
-    } catch {
-      // Group doesn't exist, continue
+  // 2. Check auto groups (if enabled)
+  if (settings.autoGrouping) {
+    const existingAutoGroup = await findAutoGroupForDomain(currentTab.windowId, domain);
+
+    if (existingAutoGroup) {
+      // Move to existing auto group if not already there
+      if (currentTab.groupId !== existingAutoGroup.id) {
+        await chrome.tabs.group({ tabIds: currentTab.id, groupId: existingAutoGroup.id });
+      }
+      return;
+    }
+
+    // No existing auto group - check if we can create one (2+ tabs with same domain)
+    const allTabs = await chrome.tabs.query({ windowId: currentTab.windowId });
+    const sameDomainTabs = allTabs.filter(t =>
+      t.id !== currentTab.id &&
+      t.groupId === -1 &&
+      getDomain(t.url) === domain
+    );
+
+    if (sameDomainTabs.length >= 1) {
+      // 2+ tabs - create new auto group
+      const tabIds = [currentTab.id, ...sameDomainTabs.map(t => t.id)];
+      const groupId = await chrome.tabs.group({ tabIds });
+      const color = await getNextAvailableColor(currentTab.windowId);
+      await chrome.tabGroups.update(groupId, { title: getShortName(domain), color });
+      markAsAutoGroup(groupId);
+      return;
     }
   }
 
-  // Auto-grouping by domain
-  if (settings.autoGrouping) {
-    const existingGroup = await findAutoGroupForDomain(currentTab.windowId, domain);
+  // 3. Tab doesn't fit custom or auto groups
+  if (currentTab.groupId !== -1) {
+    const groupId = currentTab.groupId;
 
-    if (existingGroup) {
-      await chrome.tabs.group({ tabIds: currentTab.id, groupId: existingGroup.id });
-    } else {
-      // Check if there are other ungrouped tabs with the same domain
-      const allTabs = await chrome.tabs.query({ windowId: currentTab.windowId });
-      const sameDomainUngrouped = allTabs.filter(t =>
-        t.id !== currentTab.id &&
-        t.groupId === -1 &&
-        getDomain(t.url) === domain
-      );
+    // Check if OTHER tabs (excluding this one) all share same domain
+    const groupTabs = await chrome.tabs.query({ groupId });
+    const otherTabs = groupTabs.filter(t => t.id !== currentTab.id);
 
-      if (sameDomainUngrouped.length >= 1) {
-        // 2+ tabs with same domain (this one + at least 1 other) - create group
-        const tabIds = [currentTab.id, ...sameDomainUngrouped.map(t => t.id)];
-        const groupId = await chrome.tabs.group({ tabIds });
-        const color = await getNextAvailableColor(currentTab.windowId);
-        await chrome.tabGroups.update(groupId, {
-          title: getShortName(domain),
-          color
-        });
+    if (otherTabs.length > 0) {
+      const otherDomains = new Set(otherTabs.map(t => getDomain(t.url)));
+
+      if (otherDomains.size > 1) {
+        // Other tabs have mixed domains - this is a manual group
+        // User intentionally put mismatched tabs together, respect that
+        if (isAutoGroupId(groupId)) {
+          autoGroupIds.delete(groupId);
+          saveAutoGroupIds();
+        }
+        return; // Don't ungroup, keep tab in place
       }
-      // If only 1 tab, leave it ungrouped for now
+    }
+
+    // Other tabs are pure (or no other tabs) - ungroup this mismatched tab
+    await chrome.tabs.ungroup(currentTab.id);
+
+    // Re-evaluate the group status (might become valid auto again)
+    if (otherTabs.length >= 2) {
+      await checkAndUpdateGroupStatus(groupId);
     }
   }
 }
@@ -345,6 +426,7 @@ async function applyAutoGroupingToAll() {
         const groupId = await chrome.tabs.group({ tabIds });
         const color = await getNextAvailableColor(domainTabs[0].windowId);
         await chrome.tabGroups.update(groupId, { title: displayName, color });
+        markAsAutoGroup(groupId);
       }
     }
   }
@@ -405,6 +487,14 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   tabActivationTimes.delete(tabId);
 });
 
+// Clean up auto group IDs when groups are removed
+chrome.tabGroups.onRemoved.addListener((group) => {
+  if (autoGroupIds.has(group.id)) {
+    autoGroupIds.delete(group.id);
+    saveAutoGroupIds();
+  }
+});
+
 // Periodic check for auto-ordering
 setInterval(() => {
   if (settings.autoOrdering) {
@@ -417,6 +507,7 @@ setInterval(() => {
 // Initial setup
 async function init() {
   await loadSettings();
+  await loadAutoGroupIds();
   updateBadge();
   // Don't auto-group on init - only when sidebar opens
 }
