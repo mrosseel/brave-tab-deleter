@@ -29,6 +29,7 @@ const groupDomainsInput = document.getElementById('group-domains');
 const colorPicker = document.getElementById('color-picker');
 const modalCancel = document.getElementById('modal-cancel');
 const modalSave = document.getElementById('modal-save');
+const refreshBtn = document.getElementById('refresh-btn');
 
 // Load settings from storage
 async function loadSettings() {
@@ -230,6 +231,10 @@ colorPicker.addEventListener('click', (e) => {
 
 modalCancel.addEventListener('click', closeModal);
 modalSave.addEventListener('click', saveGroup);
+
+refreshBtn.addEventListener('click', () => {
+  chrome.runtime.sendMessage({ type: 'refreshAll' });
+});
 
 modalOverlay.addEventListener('click', (e) => {
   if (e.target === modalOverlay) {

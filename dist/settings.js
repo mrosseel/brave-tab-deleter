@@ -47,6 +47,7 @@
   var colorPicker = document.getElementById("color-picker");
   var modalCancel = document.getElementById("modal-cancel");
   var modalSave = document.getElementById("modal-save");
+  var refreshBtn = document.getElementById("refresh-btn");
   async function loadSettings() {
     const stored = await chrome.storage.sync.get("settings");
     if (stored.settings) {
@@ -205,6 +206,9 @@
   });
   modalCancel.addEventListener("click", closeModal);
   modalSave.addEventListener("click", saveGroup);
+  refreshBtn.addEventListener("click", () => {
+    chrome.runtime.sendMessage({ type: "refreshAll" });
+  });
   modalOverlay.addEventListener("click", (e) => {
     if (e.target === modalOverlay) {
       closeModal();

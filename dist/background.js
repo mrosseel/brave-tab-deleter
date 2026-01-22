@@ -186,6 +186,12 @@
       settings = message.settings;
     } else if (message.type === "sidebarOpened") {
       withGroupingLock(() => applyAutoGroupingToAll());
+    } else if (message.type === "refreshAll") {
+      withGroupingLock(async () => {
+        await applyAutoGroupingToAll();
+      });
+      sendResponse({ success: true });
+      return true;
     }
   });
   chrome.storage.onChanged.addListener((changes, areaName) => {
