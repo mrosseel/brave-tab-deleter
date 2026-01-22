@@ -325,7 +325,7 @@ body {
   right: -4px;
   font-size: 10px;
   line-height: 1;
-  filter: drop-shadow(0 0 2px var(--bg-color)) drop-shadow(0 0 2px var(--bg-color));
+  filter: drop-shadow(0 0 1px white) drop-shadow(0 0 1px white) drop-shadow(0 0 2px white);
 }
 
 /* Context menu styles */
