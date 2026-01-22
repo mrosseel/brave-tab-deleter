@@ -223,11 +223,17 @@ body {
   background-color: rgba(128, 128, 128, 0.2);
 }
 
-.tab-item .favicon {
+.tab-item .favicon-wrapper {
+  position: relative;
   width: 16px;
   height: 16px;
   min-width: 16px;
   margin-right: 8px;
+}
+
+.tab-item .favicon {
+  width: 16px;
+  height: 16px;
   object-fit: contain;
 }
 
@@ -312,12 +318,14 @@ body {
   color: white;
 }
 
-/* Audio indicator */
+/* Audio indicator - overlaid on favicon */
 .audio-indicator {
-  font-size: 12px;
-  margin-left: 6px;
-  opacity: 0.8;
-  flex-shrink: 0;
+  position: absolute;
+  bottom: -3px;
+  right: -4px;
+  font-size: 10px;
+  line-height: 1;
+  filter: drop-shadow(0 0 2px var(--bg-color)) drop-shadow(0 0 2px var(--bg-color));
 }
 
 /* Context menu styles */

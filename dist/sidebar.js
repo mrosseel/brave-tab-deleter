@@ -331,10 +331,10 @@
     const parts = [];
     for (const [groupId, tabs] of groupedTabs) {
       const group = groupMap.get(groupId);
-      const tabIds = tabs.map((t) => `${t.id}:${t.active}:${t.title}`).join(",");
+      const tabIds = tabs.map((t) => `${t.id}:${t.active}:${t.title}:${t.audible}`).join(",");
       parts.push(`g${groupId}:${group?.collapsed}:${group?.title}:${tabIds}`);
     }
-    const ungroupedIds = ungroupedTabs.map((t) => `${t.id}:${t.active}:${t.title}`).join(",");
+    const ungroupedIds = ungroupedTabs.map((t) => `${t.id}:${t.active}:${t.title}:${t.audible}`).join(",");
     parts.push(`u:${ungroupedIds}`);
     const ghostIds = ghostTabs.map((t) => {
       const ghost = ghostGroups.get(t.id);
@@ -438,6 +438,8 @@
       console.log("[sidebar] Tab removed");
       window.scrollTo(0, scrollTop);
     });
+    const faviconWrapper = document.createElement("div");
+    faviconWrapper.className = "favicon-wrapper";
     const favicon = document.createElement("img");
     favicon.className = "favicon";
     if (tab.favIconUrl && !tab.favIconUrl.startsWith("chrome://")) {
@@ -449,20 +451,21 @@
       favicon.className = "favicon placeholder";
       favicon.src = "";
     };
+    faviconWrapper.appendChild(favicon);
+    if (tab.audible) {
+      const audioIcon = document.createElement("span");
+      audioIcon.className = "audio-indicator";
+      audioIcon.textContent = "\u{1F50A}";
+      audioIcon.title = "Playing audio";
+      faviconWrapper.appendChild(audioIcon);
+    }
     const title = document.createElement("span");
     title.className = "tab-title";
     title.textContent = tab.title || tab.url || "New Tab";
     title.title = tab.title || tab.url || "New Tab";
     div.appendChild(closeBtn);
-    div.appendChild(favicon);
+    div.appendChild(faviconWrapper);
     div.appendChild(title);
-    if (tab.audible) {
-      const audioIcon = document.createElement("span");
-      audioIcon.className = "audio-indicator";
-      audioIcon.innerHTML = "\u{1F50A}";
-      audioIcon.title = "Playing audio";
-      div.appendChild(audioIcon);
-    }
     div.addEventListener("click", () => {
       chrome.tabs.update(tab.id, { active: true });
     });

@@ -345,12 +345,12 @@ function computeStateHash(groupedTabs, ungroupedTabs, ghostTabs, groupMap) {
   // Hash grouped tabs
   for (const [groupId, tabs] of groupedTabs) {
     const group = groupMap.get(groupId);
-    const tabIds = tabs.map(t => `${t.id}:${t.active}:${t.title}`).join(',');
+    const tabIds = tabs.map(t => `${t.id}:${t.active}:${t.title}:${t.audible}`).join(',');
     parts.push(`g${groupId}:${group?.collapsed}:${group?.title}:${tabIds}`);
   }
 
   // Hash ungrouped tabs
-  const ungroupedIds = ungroupedTabs.map(t => `${t.id}:${t.active}:${t.title}`).join(',');
+  const ungroupedIds = ungroupedTabs.map(t => `${t.id}:${t.active}:${t.title}:${t.audible}`).join(',');
   parts.push(`u:${ungroupedIds}`);
 
   // Hash ghost tabs (excluding expiresAt since that changes every second)
@@ -485,6 +485,10 @@ function createTabElement(tab, groupInfo, onClose) {
     window.scrollTo(0, scrollTop);
   });
 
+  // Favicon wrapper for audio indicator overlay
+  const faviconWrapper = document.createElement('div');
+  faviconWrapper.className = 'favicon-wrapper';
+
   const favicon = document.createElement('img');
   favicon.className = 'favicon';
   if (tab.favIconUrl && !tab.favIconUrl.startsWith('chrome://')) {
@@ -496,6 +500,16 @@ function createTabElement(tab, groupInfo, onClose) {
     favicon.className = 'favicon placeholder';
     favicon.src = '';
   };
+  faviconWrapper.appendChild(favicon);
+
+  // Audio indicator overlaid on favicon
+  if (tab.audible) {
+    const audioIcon = document.createElement('span');
+    audioIcon.className = 'audio-indicator';
+    audioIcon.textContent = '🔊';
+    audioIcon.title = 'Playing audio';
+    faviconWrapper.appendChild(audioIcon);
+  }
 
   const title = document.createElement('span');
   title.className = 'tab-title';
@@ -503,17 +517,8 @@ function createTabElement(tab, groupInfo, onClose) {
   title.title = tab.title || tab.url || 'New Tab';
 
   div.appendChild(closeBtn);
-  div.appendChild(favicon);
+  div.appendChild(faviconWrapper);
   div.appendChild(title);
-
-  // Audio indicator
-  if (tab.audible) {
-    const audioIcon = document.createElement('span');
-    audioIcon.className = 'audio-indicator';
-    audioIcon.innerHTML = '🔊';
-    audioIcon.title = 'Playing audio';
-    div.appendChild(audioIcon);
-  }
 
   div.addEventListener('click', () => {
     chrome.tabs.update(tab.id, { active: true });
