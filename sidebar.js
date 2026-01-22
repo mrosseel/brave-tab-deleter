@@ -428,9 +428,13 @@ function createTabElement(tab, groupInfo, onClose) {
           render('tab-drag-complete');
         } catch (err) {
           console.error('Failed to move tab:', err);
-          // Revert on error
-          if (originalParent) {
-            originalParent.insertBefore(draggedElement, originalNextSibling);
+          // Revert on error - only if parent is still in document
+          if (originalParent && document.contains(originalParent)) {
+            try {
+              originalParent.insertBefore(draggedElement, originalNextSibling);
+            } catch (e) {
+              // DOM may have changed, ignore
+            }
           }
         }
       }
@@ -601,10 +605,17 @@ async function commitGroupMove(numericGroupId) {
     render('group-drag-complete');
   } catch (err) {
     console.error('Failed to move group:', err);
-    if (originalGroupNextSibling) {
-      tabListEl.insertBefore(draggedGroupElement, originalGroupNextSibling);
-    } else {
-      tabListEl.appendChild(draggedGroupElement);
+    // Only revert if elements are still in document
+    if (draggedGroupElement && document.contains(draggedGroupElement)) {
+      try {
+        if (originalGroupNextSibling && document.contains(originalGroupNextSibling)) {
+          tabListEl.insertBefore(draggedGroupElement, originalGroupNextSibling);
+        } else {
+          tabListEl.appendChild(draggedGroupElement);
+        }
+      } catch (e) {
+        // DOM may have changed, ignore
+      }
     }
   }
 }

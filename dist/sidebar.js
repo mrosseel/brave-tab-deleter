@@ -392,8 +392,11 @@
             render("tab-drag-complete");
           } catch (err) {
             console.error("Failed to move tab:", err);
-            if (originalParent) {
-              originalParent.insertBefore(draggedElement, originalNextSibling);
+            if (originalParent && document.contains(originalParent)) {
+              try {
+                originalParent.insertBefore(draggedElement, originalNextSibling);
+              } catch (e) {
+              }
             }
           }
         }
@@ -531,10 +534,15 @@
       render("group-drag-complete");
     } catch (err) {
       console.error("Failed to move group:", err);
-      if (originalGroupNextSibling) {
-        tabListEl.insertBefore(draggedGroupElement, originalGroupNextSibling);
-      } else {
-        tabListEl.appendChild(draggedGroupElement);
+      if (draggedGroupElement && document.contains(draggedGroupElement)) {
+        try {
+          if (originalGroupNextSibling && document.contains(originalGroupNextSibling)) {
+            tabListEl.insertBefore(draggedGroupElement, originalGroupNextSibling);
+          } else {
+            tabListEl.appendChild(draggedGroupElement);
+          }
+        } catch (e) {
+        }
       }
     }
   }
