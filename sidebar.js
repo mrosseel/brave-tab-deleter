@@ -1,4 +1,5 @@
 import { getColorHex } from './lib/colors.js';
+import { RENDER_DEBOUNCE_MS, GHOST_COUNTDOWN_INTERVAL_MS, SIDEBAR_INIT_DELAY_MS } from './lib/constants.js';
 import { calculateTargetIndex, getDropPosition } from './lib/drag-position.js';
 import { GHOST_GROUP_SECONDS, createGhostEntry, filterExpiredGhosts, getGhostRemainingSeconds } from './lib/ghost.js';
 import { createSleepingGroupEntry, isValidSleepingGroup, canSleepGroup } from './lib/sleep.js';
@@ -385,7 +386,7 @@ function debouncedRender(source) {
   renderTimeout = setTimeout(() => {
     renderTimeout = null;
     render(source);
-  }, 300);
+  }, RENDER_DEBOUNCE_MS);
 }
 
 async function loadTabs() {
@@ -1146,7 +1147,7 @@ async function render(source = 'unknown', forceRender = false) {
   // Notify background to apply auto-grouping (if enabled)
   chrome.runtime.sendMessage({ type: 'sidebarOpened' });
   // Small delay to let grouping complete before render
-  await new Promise(r => setTimeout(r, 100));
+  await new Promise(r => setTimeout(r, SIDEBAR_INIT_DELAY_MS));
   // Initialize group memberships tracking
   await updateGroupMemberships();
   render('initial', true);
@@ -1201,7 +1202,7 @@ setInterval(async () => {
     }
     render('ghost-expired');
   }
-}, 1000);
+}, GHOST_COUNTDOWN_INTERVAL_MS);
 
 chrome.tabs.onCreated.addListener(() => debouncedRender('tabs.onCreated'));
 chrome.tabs.onRemoved.addListener(async (tabId) => {

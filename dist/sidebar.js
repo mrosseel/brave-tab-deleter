@@ -15,6 +15,11 @@
     return GROUP_COLORS[colorName] || GROUP_COLORS.grey;
   }
 
+  // lib/constants.js
+  var RENDER_DEBOUNCE_MS = 300;
+  var GHOST_COUNTDOWN_INTERVAL_MS = 1e3;
+  var SIDEBAR_INIT_DELAY_MS = 100;
+
   // lib/drag-position.js
   function calculateTargetIndex(currentIndex, nextTabIndex, prevTabIndex, count = 1) {
     let targetIndex = null;
@@ -390,7 +395,7 @@
     renderTimeout = setTimeout(() => {
       renderTimeout = null;
       render(source);
-    }, 300);
+    }, RENDER_DEBOUNCE_MS);
   }
   async function loadTabs() {
     const queryOptions = allWindows ? {} : { currentWindow: true };
@@ -990,7 +995,7 @@
     await loadGhostGroups();
     await loadSleepingGroups();
     chrome.runtime.sendMessage({ type: "sidebarOpened" });
-    await new Promise((r) => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, SIDEBAR_INIT_DELAY_MS));
     await updateGroupMemberships();
     render("initial", true);
   })();
@@ -1032,7 +1037,7 @@
       }
       render("ghost-expired");
     }
-  }, 1e3);
+  }, GHOST_COUNTDOWN_INTERVAL_MS);
   chrome.tabs.onCreated.addListener(() => debouncedRender("tabs.onCreated"));
   chrome.tabs.onRemoved.addListener(async (tabId) => {
     ghostGroups.delete(tabId);

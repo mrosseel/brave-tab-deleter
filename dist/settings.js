@@ -22,7 +22,7 @@
     return div.innerHTML;
   }
 
-  // settings.js
+  // lib/settings-defaults.js
   var DEFAULT_SETTINGS = {
     allWindows: false,
     autoGrouping: false,
@@ -31,6 +31,8 @@
     customGrouping: false,
     customGroups: []
   };
+
+  // settings.js
   var settings = { ...DEFAULT_SETTINGS };
   var editingGroupId = null;
   var selectedColor = "blue";

@@ -1,15 +1,6 @@
 import { getColorHex } from './lib/colors.js';
 import { escapeHtml } from './lib/domain.js';
-
-// Default settings
-const DEFAULT_SETTINGS = {
-  allWindows: false,
-  autoGrouping: false,
-  autoOrdering: false,
-  autoOrderingSeconds: 5,
-  customGrouping: false,
-  customGroups: []
-};
+import { DEFAULT_SETTINGS } from './lib/settings-defaults.js';
 
 let settings = { ...DEFAULT_SETTINGS };
 let editingGroupId = null;

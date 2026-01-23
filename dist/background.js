@@ -116,18 +116,10 @@
     return "blue";
   }
 
-  // background.js
-  console.log("=== BACKGROUND.JS VERSION 6 LOADED ===");
-  var sidebarOpen = /* @__PURE__ */ new Map();
-  var settings = {
-    allWindows: false,
-    autoGrouping: false,
-    autoOrdering: false,
-    autoOrderingSeconds: 5,
-    customGrouping: false,
-    customGroups: []
-  };
-  var tabActivationTimes = /* @__PURE__ */ new Map();
+  // lib/constants.js
+  var AUTO_ORDERING_CHECK_INTERVAL_MS = 1e3;
+
+  // lib/group-tracking.js
   var autoGroupIds = /* @__PURE__ */ new Set();
   var manualGroupIds = /* @__PURE__ */ new Set();
   async function loadAutoGroupIds() {
@@ -162,15 +154,50 @@
   function isManualGroupId(groupId) {
     return manualGroupIds.has(groupId);
   }
+  function unmarkAutoGroup(groupId) {
+    if (autoGroupIds.has(groupId)) {
+      autoGroupIds.delete(groupId);
+      saveAutoGroupIds();
+      return true;
+    }
+    return false;
+  }
+  function removeGroupId(groupId) {
+    let changed = false;
+    if (autoGroupIds.has(groupId)) {
+      autoGroupIds.delete(groupId);
+      saveAutoGroupIds();
+      changed = true;
+    }
+    if (manualGroupIds.has(groupId)) {
+      manualGroupIds.delete(groupId);
+      saveManualGroupIds();
+      changed = true;
+    }
+    return changed;
+  }
+
+  // lib/settings-defaults.js
+  var DEFAULT_SETTINGS = {
+    allWindows: false,
+    autoGrouping: false,
+    autoOrdering: false,
+    autoOrderingSeconds: 5,
+    customGrouping: false,
+    customGroups: []
+  };
+
+  // background.js
+  console.log("=== BACKGROUND.JS VERSION 6 LOADED ===");
+  var sidebarOpen = /* @__PURE__ */ new Map();
+  var settings = { ...DEFAULT_SETTINGS };
+  var tabActivationTimes = /* @__PURE__ */ new Map();
   async function checkAndUpdateGroupStatus(groupId) {
     try {
       const group = await chrome.tabGroups.get(groupId);
       const tabs = await chrome.tabs.query({ groupId });
       if (tabs.length < 2) {
-        if (isAutoGroupId(groupId)) {
-          autoGroupIds.delete(groupId);
-          saveAutoGroupIds();
-        }
+        unmarkAutoGroup(groupId);
         return false;
       }
       const firstDomain = getDomain(tabs[0].url);
@@ -182,15 +209,11 @@
         }
         return true;
       } else {
-        if (isAutoGroupId(groupId)) {
-          autoGroupIds.delete(groupId);
-          saveAutoGroupIds();
-        }
+        unmarkAutoGroup(groupId);
         return false;
       }
     } catch {
-      autoGroupIds.delete(groupId);
-      saveAutoGroupIds();
+      unmarkAutoGroup(groupId);
       return false;
     }
   }
@@ -352,10 +375,7 @@
       if (otherTabs.length > 0) {
         const otherDomains = new Set(otherTabs.map((t) => getDomain(t.url)));
         if (otherDomains.size > 1) {
-          if (isAutoGroupId(groupId)) {
-            autoGroupIds.delete(groupId);
-            saveAutoGroupIds();
-          }
+          unmarkAutoGroup(groupId);
           return;
         }
       }
@@ -518,14 +538,7 @@
     tabActivationTimes.delete(tabId);
   });
   chrome.tabGroups.onRemoved.addListener((group) => {
-    if (autoGroupIds.has(group.id)) {
-      autoGroupIds.delete(group.id);
-      saveAutoGroupIds();
-    }
-    if (manualGroupIds.has(group.id)) {
-      manualGroupIds.delete(group.id);
-      saveManualGroupIds();
-    }
+    removeGroupId(group.id);
   });
   setInterval(() => {
     if (settings.autoOrdering) {
@@ -533,7 +546,7 @@
         if (tabs[0]) checkAutoOrdering(tabs[0].id);
       });
     }
-  }, 1e3);
+  }, AUTO_ORDERING_CHECK_INTERVAL_MS);
   async function init() {
     await loadSettings();
     await loadAutoGroupIds();

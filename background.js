@@ -2,6 +2,18 @@
 import { getDomain, getHostname, getShortName, shouldSkipUrl } from './lib/domain.js';
 import { createLock } from './lib/lock.js';
 import { findAvailableColor } from './lib/colors.js';
+import { AUTO_ORDERING_CHECK_INTERVAL_MS } from './lib/constants.js';
+import {
+  loadAutoGroupIds,
+  loadManualGroupIds,
+  markAsAutoGroup,
+  markAsManualGroup,
+  isAutoGroupId,
+  isManualGroupId,
+  unmarkAutoGroup,
+  removeGroupId
+} from './lib/group-tracking.js';
+import { DEFAULT_SETTINGS } from './lib/settings-defaults.js';
 
 console.log('=== BACKGROUND.JS VERSION 6 LOADED ===');
 
@@ -9,63 +21,11 @@ console.log('=== BACKGROUND.JS VERSION 6 LOADED ===');
 const sidebarOpen = new Map();
 
 // Settings cache
-let settings = {
-  allWindows: false,
-  autoGrouping: false,
-  autoOrdering: false,
-  autoOrderingSeconds: 5,
-  customGrouping: false,
-  customGroups: []
-};
+let settings = { ...DEFAULT_SETTINGS };
 
 // Track tab activation times for auto-ordering
 const tabActivationTimes = new Map();
 
-// Track auto group IDs we created (session storage - clears on browser restart)
-let autoGroupIds = new Set();
-
-// Track manual group IDs (groups that should not be auto-ungrouped, e.g., woken from sleep)
-let manualGroupIds = new Set();
-
-async function loadAutoGroupIds() {
-  const stored = await chrome.storage.session.get('autoGroupIds');
-  autoGroupIds = new Set(stored.autoGroupIds || []);
-}
-
-async function saveAutoGroupIds() {
-  await chrome.storage.session.set({ autoGroupIds: [...autoGroupIds] });
-}
-
-async function loadManualGroupIds() {
-  const stored = await chrome.storage.session.get('manualGroupIds');
-  manualGroupIds = new Set(stored.manualGroupIds || []);
-}
-
-async function saveManualGroupIds() {
-  await chrome.storage.session.set({ manualGroupIds: [...manualGroupIds] });
-}
-
-function markAsAutoGroup(groupId) {
-  autoGroupIds.add(groupId);
-  manualGroupIds.delete(groupId); // Can't be both
-  saveAutoGroupIds();
-  saveManualGroupIds();
-}
-
-function markAsManualGroup(groupId) {
-  manualGroupIds.add(groupId);
-  autoGroupIds.delete(groupId); // Can't be both
-  saveManualGroupIds();
-  saveAutoGroupIds();
-}
-
-function isAutoGroupId(groupId) {
-  return autoGroupIds.has(groupId);
-}
-
-function isManualGroupId(groupId) {
-  return manualGroupIds.has(groupId);
-}
 
 // Check if a group qualifies as auto (all tabs same domain, title matches)
 async function checkAndUpdateGroupStatus(groupId) {
@@ -74,10 +34,7 @@ async function checkAndUpdateGroupStatus(groupId) {
     const tabs = await chrome.tabs.query({ groupId });
 
     if (tabs.length < 2) {
-      if (isAutoGroupId(groupId)) {
-        autoGroupIds.delete(groupId);
-        saveAutoGroupIds();
-      }
+      unmarkAutoGroup(groupId);
       return false;
     }
 
@@ -91,15 +48,11 @@ async function checkAndUpdateGroupStatus(groupId) {
       }
       return true;
     } else {
-      if (isAutoGroupId(groupId)) {
-        autoGroupIds.delete(groupId);
-        saveAutoGroupIds();
-      }
+      unmarkAutoGroup(groupId);
       return false;
     }
   } catch {
-    autoGroupIds.delete(groupId);
-    saveAutoGroupIds();
+    unmarkAutoGroup(groupId);
     return false;
   }
 }
@@ -322,10 +275,7 @@ async function groupSingleTab(tab) {
       if (otherDomains.size > 1) {
         // Other tabs have mixed domains - this is a manual group
         // User intentionally put mismatched tabs together, respect that
-        if (isAutoGroupId(groupId)) {
-          autoGroupIds.delete(groupId);
-          saveAutoGroupIds();
-        }
+        unmarkAutoGroup(groupId);
         return; // Don't ungroup, keep tab in place
       }
     }
@@ -551,14 +501,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 
 // Clean up auto and manual group IDs when groups are removed
 chrome.tabGroups.onRemoved.addListener((group) => {
-  if (autoGroupIds.has(group.id)) {
-    autoGroupIds.delete(group.id);
-    saveAutoGroupIds();
-  }
-  if (manualGroupIds.has(group.id)) {
-    manualGroupIds.delete(group.id);
-    saveManualGroupIds();
-  }
+  removeGroupId(group.id);
 });
 
 // Periodic check for auto-ordering
@@ -568,7 +511,7 @@ setInterval(() => {
       if (tabs[0]) checkAutoOrdering(tabs[0].id);
     });
   }
-}, 1000);
+}, AUTO_ORDERING_CHECK_INTERVAL_MS);
 
 // Initial setup
 async function init() {
