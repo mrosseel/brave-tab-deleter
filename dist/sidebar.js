@@ -388,6 +388,7 @@
   var renderCount = 0;
   var renderTimeout = null;
   var lastStateHash = null;
+  var pendingScrollToTabId = null;
   function debouncedRender(source) {
     if (renderTimeout) {
       clearTimeout(renderTimeout);
@@ -396,6 +397,21 @@
       renderTimeout = null;
       render(source);
     }, RENDER_DEBOUNCE_MS);
+  }
+  function scrollToFocusedTab(tabId) {
+    const tabElement = document.querySelector(`[data-tab-id="${tabId}"]`);
+    if (tabElement) {
+      const groupContainer = tabElement.closest(".tab-group");
+      const tabsContainer = groupContainer?.querySelector(".group-tabs");
+      if (tabsContainer?.classList.contains("collapsed")) {
+        const header = groupContainer?.querySelector(".group-header");
+        if (header) {
+          header.scrollIntoView({ behavior: "smooth", block: "center" });
+        }
+      } else {
+        tabElement.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+    }
   }
   async function loadTabs() {
     const queryOptions = allWindows ? {} : { currentWindow: true };
@@ -988,7 +1004,13 @@
         ));
       }
     });
-    window.scrollTo(0, scrollTop);
+    if (pendingScrollToTabId !== null) {
+      const tabIdToScroll = pendingScrollToTabId;
+      pendingScrollToTabId = null;
+      requestAnimationFrame(() => scrollToFocusedTab(tabIdToScroll));
+    } else {
+      window.scrollTo(0, scrollTop);
+    }
   }
   (async () => {
     await loadSettings();
@@ -1047,7 +1069,10 @@
   });
   chrome.tabs.onUpdated.addListener(() => debouncedRender("tabs.onUpdated"));
   chrome.tabs.onMoved.addListener(() => debouncedRender("tabs.onMoved"));
-  chrome.tabs.onActivated.addListener(() => debouncedRender("tabs.onActivated"));
+  chrome.tabs.onActivated.addListener((activeInfo) => {
+    pendingScrollToTabId = activeInfo.tabId;
+    debouncedRender("tabs.onActivated");
+  });
   chrome.tabGroups.onCreated.addListener(() => debouncedRender("tabGroups.onCreated"));
   chrome.tabGroups.onRemoved.addListener(() => debouncedRender("tabGroups.onRemoved"));
   chrome.tabGroups.onUpdated.addListener(() => debouncedRender("tabGroups.onUpdated"));

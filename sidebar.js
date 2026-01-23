@@ -378,6 +378,9 @@ let renderCount = 0;
 let renderTimeout = null;
 let lastStateHash = null;
 
+// Pending tab ID to scroll to after render completes
+let pendingScrollToTabId = null;
+
 // Debounced render - waits 300ms after last call to let grouping complete
 function debouncedRender(source) {
   if (renderTimeout) {
@@ -387,6 +390,28 @@ function debouncedRender(source) {
     renderTimeout = null;
     render(source);
   }, RENDER_DEBOUNCE_MS);
+}
+
+// Scroll to the focused tab (or its group header if collapsed)
+function scrollToFocusedTab(tabId) {
+  const tabElement = document.querySelector(`[data-tab-id="${tabId}"]`);
+
+  if (tabElement) {
+    // Check if parent group is collapsed
+    const groupContainer = tabElement.closest('.tab-group');
+    const tabsContainer = groupContainer?.querySelector('.group-tabs');
+
+    if (tabsContainer?.classList.contains('collapsed')) {
+      // Group is collapsed, scroll to header instead
+      const header = groupContainer?.querySelector('.group-header');
+      if (header) {
+        header.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    } else {
+      // Tab is visible, scroll to it
+      tabElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }
 }
 
 async function loadTabs() {
@@ -1136,7 +1161,15 @@ async function render(source = 'unknown', forceRender = false) {
     }
   });
 
-  window.scrollTo(0, scrollTop);
+  // Scroll to focused tab if pending (takes priority over scroll position restore)
+  if (pendingScrollToTabId !== null) {
+    const tabIdToScroll = pendingScrollToTabId;
+    pendingScrollToTabId = null;
+    // Use requestAnimationFrame to ensure DOM is rendered
+    requestAnimationFrame(() => scrollToFocusedTab(tabIdToScroll));
+  } else {
+    window.scrollTo(0, scrollTop);
+  }
 }
 
 // Initialize: load settings, ghost groups, sleeping groups, trigger auto-grouping, then render
@@ -1214,7 +1247,10 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
 });
 chrome.tabs.onUpdated.addListener(() => debouncedRender('tabs.onUpdated'));
 chrome.tabs.onMoved.addListener(() => debouncedRender('tabs.onMoved'));
-chrome.tabs.onActivated.addListener(() => debouncedRender('tabs.onActivated'));
+chrome.tabs.onActivated.addListener((activeInfo) => {
+  pendingScrollToTabId = activeInfo.tabId;
+  debouncedRender('tabs.onActivated');
+});
 chrome.tabGroups.onCreated.addListener(() => debouncedRender('tabGroups.onCreated'));
 chrome.tabGroups.onRemoved.addListener(() => debouncedRender('tabGroups.onRemoved'));
 chrome.tabGroups.onUpdated.addListener(() => debouncedRender('tabGroups.onUpdated'));

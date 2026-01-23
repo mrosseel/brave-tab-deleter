@@ -246,6 +246,21 @@ When a sleeping group is woken:
 - Cannot sleep ghost groups
 - Cannot drag tabs into or out of sleeping groups
 
+## 14. Scroll to Focused Tab
+
+When a tab is focused in Chrome/Brave, the sidebar automatically scrolls to show it.
+
+### Behavior
+- When user clicks/activates a tab in the browser, sidebar scrolls to center that tab
+- If the tab's group is collapsed, the group header is centered instead (group stays collapsed)
+- Smooth scrolling animation for visual feedback
+- Only scrolls if the focused tab is not already visible in the viewport
+
+### Implementation
+- Triggered by `chrome.tabs.onActivated` event
+- After render completes, finds the tab element by its data attribute
+- Uses `scrollIntoView({ behavior: 'smooth', block: 'center' })` for centering
+
 ---
 
 # Technical Considerations
