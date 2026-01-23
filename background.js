@@ -95,6 +95,7 @@ async function loadSettings() {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'settingsUpdated') {
     settings = message.settings;
+    updateBadge(); // Update badge when settings change (e.g., allWindows toggled)
   } else if (message.type === 'sidebarOpened') {
     withGroupingLock(() => applyAutoGroupingToAll());
   } else if (message.type === 'refreshAll') {

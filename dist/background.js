@@ -185,6 +185,7 @@
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === "settingsUpdated") {
       settings = message.settings;
+      updateBadge();
     } else if (message.type === "sidebarOpened") {
       withGroupingLock(() => applyAutoGroupingToAll());
     } else if (message.type === "refreshAll") {
