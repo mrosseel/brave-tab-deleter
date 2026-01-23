@@ -29,6 +29,23 @@ describe('createSleepingGroupEntry', () => {
     expect(entry.tabs).toHaveLength(2);
     expect(entry.sleepedAt).toBe(Date.now());
     expect(entry.originalWindowId).toBe(123);
+    expect(entry.isManual).toBe(false);
+  });
+
+  it('defaults isManual to false', () => {
+    const groupInfo = { id: 1, title: 'Test', color: 'blue' };
+    const tabs = [{ url: 'https://example.com', title: 'Test' }];
+    const entry = createSleepingGroupEntry(groupInfo, tabs, 1);
+
+    expect(entry.isManual).toBe(false);
+  });
+
+  it('sets isManual to true when specified', () => {
+    const groupInfo = { id: 1, title: 'Test', color: 'blue' };
+    const tabs = [{ url: 'https://example.com', title: 'Test' }];
+    const entry = createSleepingGroupEntry(groupInfo, tabs, 1, true);
+
+    expect(entry.isManual).toBe(true);
   });
 
   it('maps tab data correctly', () => {

@@ -70,7 +70,7 @@
   }
 
   // lib/sleep.js
-  function createSleepingGroupEntry(groupInfo, tabs, windowId) {
+  function createSleepingGroupEntry(groupInfo, tabs, windowId, isManual = false) {
     const id = `sleep-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     return {
       id,
@@ -82,7 +82,8 @@
         favIconUrl: tab.favIconUrl || null
       })),
       sleepedAt: Date.now(),
-      originalWindowId: windowId
+      originalWindowId: windowId,
+      isManual
     };
   }
   function isValidSleepingGroup(entry) {
@@ -303,7 +304,9 @@
   }
   async function sleepGroup(groupId, groupInfo, tabs) {
     const windowId = tabs.length > 0 ? tabs[0].windowId : chrome.windows.WINDOW_ID_CURRENT;
-    const entry = createSleepingGroupEntry(groupInfo, tabs, windowId);
+    const response = await chrome.runtime.sendMessage({ type: "isAutoGroup", groupId });
+    const isManual = !response.isAuto;
+    const entry = createSleepingGroupEntry(groupInfo, tabs, windowId, isManual);
     sleepingGroups.set(entry.id, entry);
     await saveSleepingGroups();
     const tabIds = tabs.map((t) => t.id);
@@ -331,6 +334,9 @@
           title: entry.title,
           color: entry.color
         });
+        if (entry.isManual) {
+          await chrome.runtime.sendMessage({ type: "markManualGroup", groupId });
+        }
       } catch (e) {
         console.error("Failed to group woken tabs:", e);
       }

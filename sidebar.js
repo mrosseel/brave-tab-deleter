@@ -266,7 +266,12 @@ async function saveSleepingGroups() {
 // Sleep a group: save tabs and close them
 async function sleepGroup(groupId, groupInfo, tabs) {
   const windowId = tabs.length > 0 ? tabs[0].windowId : chrome.windows.WINDOW_ID_CURRENT;
-  const entry = createSleepingGroupEntry(groupInfo, tabs, windowId);
+
+  // Check if this is a manual (non-auto) group
+  const response = await chrome.runtime.sendMessage({ type: 'isAutoGroup', groupId });
+  const isManual = !response.isAuto;
+
+  const entry = createSleepingGroupEntry(groupInfo, tabs, windowId, isManual);
 
   sleepingGroups.set(entry.id, entry);
   await saveSleepingGroups();
@@ -306,6 +311,11 @@ async function wakeGroup(sleepId) {
         title: entry.title,
         color: entry.color
       });
+
+      // If this was a manual group, mark it so auto-grouping won't touch it
+      if (entry.isManual) {
+        await chrome.runtime.sendMessage({ type: 'markManualGroup', groupId });
+      }
     } catch (e) {
       console.error('Failed to group woken tabs:', e);
     }

@@ -129,6 +129,7 @@
   };
   var tabActivationTimes = /* @__PURE__ */ new Map();
   var autoGroupIds = /* @__PURE__ */ new Set();
+  var manualGroupIds = /* @__PURE__ */ new Set();
   async function loadAutoGroupIds() {
     const stored = await chrome.storage.session.get("autoGroupIds");
     autoGroupIds = new Set(stored.autoGroupIds || []);
@@ -136,12 +137,30 @@
   async function saveAutoGroupIds() {
     await chrome.storage.session.set({ autoGroupIds: [...autoGroupIds] });
   }
+  async function loadManualGroupIds() {
+    const stored = await chrome.storage.session.get("manualGroupIds");
+    manualGroupIds = new Set(stored.manualGroupIds || []);
+  }
+  async function saveManualGroupIds() {
+    await chrome.storage.session.set({ manualGroupIds: [...manualGroupIds] });
+  }
   function markAsAutoGroup(groupId) {
     autoGroupIds.add(groupId);
+    manualGroupIds.delete(groupId);
+    saveAutoGroupIds();
+    saveManualGroupIds();
+  }
+  function markAsManualGroup(groupId) {
+    manualGroupIds.add(groupId);
+    autoGroupIds.delete(groupId);
+    saveManualGroupIds();
     saveAutoGroupIds();
   }
   function isAutoGroupId(groupId) {
     return autoGroupIds.has(groupId);
+  }
+  function isManualGroupId(groupId) {
+    return manualGroupIds.has(groupId);
   }
   async function checkAndUpdateGroupStatus(groupId) {
     try {
@@ -194,6 +213,13 @@
       });
       sendResponse({ success: true });
       return true;
+    } else if (message.type === "isAutoGroup") {
+      sendResponse({ isAuto: isAutoGroupId(message.groupId) });
+      return true;
+    } else if (message.type === "markManualGroup") {
+      markAsManualGroup(message.groupId);
+      sendResponse({ success: true });
+      return true;
     }
   });
   chrome.storage.onChanged.addListener((changes, areaName) => {
@@ -206,8 +232,8 @@
     const isOpen = sidebarOpen.get(windowId) || false;
     if (isOpen) {
       await chrome.storage.session.remove("ghostGroups");
-      await chrome.sidePanel.setOptions({ enabled: false });
-      await chrome.sidePanel.setOptions({ enabled: true, path: "sidebar.html" });
+      await chrome.sidePanel.setOptions({ tabId: tab.id, enabled: false });
+      await chrome.sidePanel.setOptions({ tabId: tab.id, enabled: true, path: "sidebar.html" });
       sidebarOpen.set(windowId, false);
     } else {
       await chrome.sidePanel.open({ windowId });
@@ -318,6 +344,9 @@
     }
     if (currentTab.groupId !== -1) {
       const groupId = currentTab.groupId;
+      if (isManualGroupId(groupId)) {
+        return;
+      }
       const groupTabs = await chrome.tabs.query({ groupId });
       const otherTabs = groupTabs.filter((t) => t.id !== currentTab.id);
       if (otherTabs.length > 0) {
@@ -493,6 +522,10 @@
       autoGroupIds.delete(group.id);
       saveAutoGroupIds();
     }
+    if (manualGroupIds.has(group.id)) {
+      manualGroupIds.delete(group.id);
+      saveManualGroupIds();
+    }
   });
   setInterval(() => {
     if (settings.autoOrdering) {
@@ -504,6 +537,7 @@
   async function init() {
     await loadSettings();
     await loadAutoGroupIds();
+    await loadManualGroupIds();
     updateBadge();
   }
   init();

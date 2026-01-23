@@ -24,6 +24,9 @@ const tabActivationTimes = new Map();
 // Track auto group IDs we created (session storage - clears on browser restart)
 let autoGroupIds = new Set();
 
+// Track manual group IDs (groups that should not be auto-ungrouped, e.g., woken from sleep)
+let manualGroupIds = new Set();
+
 async function loadAutoGroupIds() {
   const stored = await chrome.storage.session.get('autoGroupIds');
   autoGroupIds = new Set(stored.autoGroupIds || []);
@@ -33,13 +36,35 @@ async function saveAutoGroupIds() {
   await chrome.storage.session.set({ autoGroupIds: [...autoGroupIds] });
 }
 
+async function loadManualGroupIds() {
+  const stored = await chrome.storage.session.get('manualGroupIds');
+  manualGroupIds = new Set(stored.manualGroupIds || []);
+}
+
+async function saveManualGroupIds() {
+  await chrome.storage.session.set({ manualGroupIds: [...manualGroupIds] });
+}
+
 function markAsAutoGroup(groupId) {
   autoGroupIds.add(groupId);
+  manualGroupIds.delete(groupId); // Can't be both
+  saveAutoGroupIds();
+  saveManualGroupIds();
+}
+
+function markAsManualGroup(groupId) {
+  manualGroupIds.add(groupId);
+  autoGroupIds.delete(groupId); // Can't be both
+  saveManualGroupIds();
   saveAutoGroupIds();
 }
 
 function isAutoGroupId(groupId) {
   return autoGroupIds.has(groupId);
+}
+
+function isManualGroupId(groupId) {
+  return manualGroupIds.has(groupId);
 }
 
 // Check if a group qualifies as auto (all tabs same domain, title matches)
@@ -104,6 +129,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     });
     sendResponse({ success: true });
     return true;
+  } else if (message.type === 'isAutoGroup') {
+    sendResponse({ isAuto: isAutoGroupId(message.groupId) });
+    return true;
+  } else if (message.type === 'markManualGroup') {
+    markAsManualGroup(message.groupId);
+    sendResponse({ success: true });
+    return true;
   }
 });
 
@@ -121,8 +153,9 @@ chrome.action.onClicked.addListener(async (tab) => {
 
   if (isOpen) {
     await chrome.storage.session.remove('ghostGroups');
-    await chrome.sidePanel.setOptions({ enabled: false });
-    await chrome.sidePanel.setOptions({ enabled: true, path: 'sidebar.html' });
+    // Close sidebar for this window only by disabling/re-enabling for this tab
+    await chrome.sidePanel.setOptions({ tabId: tab.id, enabled: false });
+    await chrome.sidePanel.setOptions({ tabId: tab.id, enabled: true, path: 'sidebar.html' });
     sidebarOpen.set(windowId, false);
   } else {
     await chrome.sidePanel.open({ windowId });
@@ -273,6 +306,11 @@ async function groupSingleTab(tab) {
   // 3. Tab doesn't fit custom or auto groups
   if (currentTab.groupId !== -1) {
     const groupId = currentTab.groupId;
+
+    // Never ungroup tabs from manually protected groups (e.g., woken from sleep)
+    if (isManualGroupId(groupId)) {
+      return;
+    }
 
     // Check if OTHER tabs (excluding this one) all share same domain
     const groupTabs = await chrome.tabs.query({ groupId });
@@ -511,11 +549,15 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   tabActivationTimes.delete(tabId);
 });
 
-// Clean up auto group IDs when groups are removed
+// Clean up auto and manual group IDs when groups are removed
 chrome.tabGroups.onRemoved.addListener((group) => {
   if (autoGroupIds.has(group.id)) {
     autoGroupIds.delete(group.id);
     saveAutoGroupIds();
+  }
+  if (manualGroupIds.has(group.id)) {
+    manualGroupIds.delete(group.id);
+    saveManualGroupIds();
   }
 });
 
@@ -532,6 +574,7 @@ setInterval(() => {
 async function init() {
   await loadSettings();
   await loadAutoGroupIds();
+  await loadManualGroupIds();
   updateBadge();
   // Don't auto-group on init - only when sidebar opens
 }
