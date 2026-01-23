@@ -10,6 +10,7 @@ const sidebarOpen = new Map();
 
 // Settings cache
 let settings = {
+  allWindows: false,
   autoGrouping: false,
   autoOrdering: false,
   autoOrderingSeconds: 5,
@@ -130,7 +131,8 @@ chrome.action.onClicked.addListener(async (tab) => {
 
 // Update badge with tab count
 async function updateBadge() {
-  const tabs = await chrome.tabs.query({ currentWindow: true });
+  const queryOptions = settings.allWindows ? {} : { currentWindow: true };
+  const tabs = await chrome.tabs.query(queryOptions);
   chrome.action.setBadgeText({ text: tabs.length.toString() });
   chrome.action.setBadgeBackgroundColor({ color: '#6366f1' });
 }
@@ -303,8 +305,23 @@ async function groupSingleTab(tab) {
 async function applyAutoGroupingToAll() {
   if (!settings.autoGrouping && !settings.customGrouping) return;
 
-  const tabs = await chrome.tabs.query({ currentWindow: true });
-  const groups = await chrome.tabGroups.query({ windowId: chrome.windows.WINDOW_ID_CURRENT });
+  if (settings.allWindows) {
+    // Apply to all windows
+    const windows = await chrome.windows.getAll({ windowTypes: ['normal'] });
+    for (const win of windows) {
+      await applyAutoGroupingToWindow(win.id);
+    }
+  } else {
+    // Apply to current window only
+    const currentWindow = await chrome.windows.getCurrent();
+    await applyAutoGroupingToWindow(currentWindow.id);
+  }
+}
+
+// Apply auto-grouping to a specific window
+async function applyAutoGroupingToWindow(windowId) {
+  const tabs = await chrome.tabs.query({ windowId });
+  const groups = await chrome.tabGroups.query({ windowId });
 
   // Find "Other" group and identify custom groups by title
   const otherGroup = groups.find(g => g.title === 'Other' && g.color === 'grey');
@@ -394,7 +411,7 @@ async function applyAutoGroupingToAll() {
   // Second pass: handle auto-grouping for remaining ungrouped tabs
   if (settings.autoGrouping) {
     // Re-query tabs since groupIds may have changed
-    const updatedTabs = await chrome.tabs.query({ currentWindow: true });
+    const updatedTabs = await chrome.tabs.query({ windowId });
     const domainMap = new Map();
 
     for (const tab of updatedTabs) {

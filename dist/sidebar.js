@@ -135,6 +135,13 @@
   var contextMenu = document.getElementById("context-menu");
   var moveToGroupSubmenu = document.getElementById("move-to-group-submenu");
   var ungroupOption = document.getElementById("ungroup-option");
+  var allWindows = false;
+  async function loadSettings() {
+    const stored = await chrome.storage.sync.get("settings");
+    if (stored.settings) {
+      allWindows = stored.settings.allWindows || false;
+    }
+  }
   var contextMenuTab = null;
   settingsBtn.addEventListener("click", () => {
     window.location.href = "settings.html";
@@ -380,9 +387,10 @@
     }, 300);
   }
   async function loadTabs() {
-    const tabs = await chrome.tabs.query({ currentWindow: true });
-    const windowId = tabs.length > 0 ? tabs[0].windowId : chrome.windows.WINDOW_ID_CURRENT;
-    const groups = await chrome.tabGroups.query({ windowId });
+    const queryOptions = allWindows ? {} : { currentWindow: true };
+    const tabs = await chrome.tabs.query(queryOptions);
+    const currentWindowId = (await chrome.windows.getCurrent()).id;
+    const groups = allWindows ? await chrome.tabGroups.query({}) : await chrome.tabGroups.query({ windowId: currentWindowId });
     const groupMap = /* @__PURE__ */ new Map();
     groups.forEach((group) => {
       groupMap.set(group.id, group);
@@ -410,7 +418,7 @@
         groupedTabs.get(tab.groupId).push(tab);
       }
     }
-    return { groupedTabs, ungroupedTabs, ghostTabs, groupMap, groupOrder, windowId };
+    return { groupedTabs, ungroupedTabs, ghostTabs, groupMap, groupOrder, windowId: currentWindowId };
   }
   function computeStateHash(groupedTabs, ungroupedTabs, ghostTabs, groupMap) {
     const parts = [];
@@ -972,6 +980,7 @@
     window.scrollTo(0, scrollTop);
   }
   (async () => {
+    await loadSettings();
     await loadGhostGroups();
     await loadSleepingGroups();
     chrome.runtime.sendMessage({ type: "sidebarOpened" });
@@ -979,6 +988,15 @@
     await updateGroupMemberships();
     render("initial", true);
   })();
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === "sync" && changes.settings) {
+      const newSettings = changes.settings.newValue;
+      if (newSettings && newSettings.allWindows !== allWindows) {
+        allWindows = newSettings.allWindows || false;
+        render("settings-changed", true);
+      }
+    }
+  });
   setInterval(async () => {
     if (ghostGroups.size === 0) return;
     const { validGhosts, hadExpired } = filterExpiredGhosts(ghostGroups);

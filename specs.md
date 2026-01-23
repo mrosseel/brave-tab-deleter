@@ -157,6 +157,7 @@ Accessible via settings button in sidebar header.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
+| Window Scope | Current Window | Show tabs from current window only or all windows |
 | Auto Grouping | OFF | Group tabs by domain when 2+ share same domain |
 | Custom Grouping | OFF | Enable user-defined custom groups |
 | Group Sort Order | Browser Order | How to sort groups in sidebar |
@@ -175,7 +176,32 @@ Accessible via settings button in sidebar header.
 - Cancel and Save buttons
 - Click outside modal closes it
 
-## 10. Excluded URLs
+## 10. Window Scope
+
+Controls whether the extension operates on the current browser window only or across all windows.
+
+### Options
+- **Current Window** (default): Only show and manage tabs from the window where the sidebar is open
+- **All Windows**: Show and manage tabs from all browser windows
+
+### Behavior by Scope
+
+| Feature | Current Window | All Windows |
+|---------|---------------|-------------|
+| Tab display | Tabs from current window | Tabs from all windows |
+| Auto-grouping | Applied to current window | Applied across all windows |
+| Custom groups | Applied to current window | Applied across all windows |
+| Tab count badge | Current window count | Total across all windows |
+| Drag & drop | Within current window | Within current window only |
+| Sleeping groups | Shown regardless of scope | Shown regardless of scope |
+
+### Notes
+- Drag and drop always operates within the current window for safety
+- Sleeping groups are always visible since they have no window association
+- Ghost groups are scoped to the window where they were created
+- When "All Windows" is selected, tabs are visually grouped by window with a subtle separator
+
+## 11. Excluded URLs
 
 These URLs are never grouped or shown in sidebar:
 - chrome://newtab/
@@ -183,12 +209,12 @@ These URLs are never grouped or shown in sidebar:
 - chrome://* (all Chrome internal pages)
 - chrome-extension://* (all extension pages)
 
-## 11. Theme Support
+## 12. Theme Support
 
 - Supports system light/dark mode via `prefers-color-scheme`
 - Both sidebar and settings adapt colors automatically
 
-## 12. Group Sleep
+## 13. Group Sleep
 
 Allows temporarily "sleeping" a group to free resources while preserving its tabs for later.
 

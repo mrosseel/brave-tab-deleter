@@ -12,6 +12,17 @@ const contextMenu = document.getElementById('context-menu');
 const moveToGroupSubmenu = document.getElementById('move-to-group-submenu');
 const ungroupOption = document.getElementById('ungroup-option');
 
+// Settings state
+let allWindows = false;
+
+// Load settings from storage
+async function loadSettings() {
+  const stored = await chrome.storage.sync.get('settings');
+  if (stored.settings) {
+    allWindows = stored.settings.allWindows || false;
+  }
+}
+
 // Context menu state
 let contextMenuTab = null;
 // Settings button click handler
@@ -368,9 +379,15 @@ function debouncedRender(source) {
 }
 
 async function loadTabs() {
-  const tabs = await chrome.tabs.query({ currentWindow: true });
-  const windowId = tabs.length > 0 ? tabs[0].windowId : chrome.windows.WINDOW_ID_CURRENT;
-  const groups = await chrome.tabGroups.query({ windowId });
+  // Query tabs based on window scope setting
+  const queryOptions = allWindows ? {} : { currentWindow: true };
+  const tabs = await chrome.tabs.query(queryOptions);
+  const currentWindowId = (await chrome.windows.getCurrent()).id;
+
+  // Get groups from all windows or current window
+  const groups = allWindows
+    ? await chrome.tabGroups.query({})
+    : await chrome.tabGroups.query({ windowId: currentWindowId });
 
   const groupMap = new Map();
   groups.forEach(group => {
@@ -408,7 +425,7 @@ async function loadTabs() {
     }
   }
 
-  return { groupedTabs, ungroupedTabs, ghostTabs, groupMap, groupOrder, windowId };
+  return { groupedTabs, ungroupedTabs, ghostTabs, groupMap, groupOrder, windowId: currentWindowId };
 }
 
 // Compute a hash of the current state for comparison
@@ -1111,8 +1128,9 @@ async function render(source = 'unknown', forceRender = false) {
   window.scrollTo(0, scrollTop);
 }
 
-// Initialize: load ghost groups, sleeping groups, trigger auto-grouping, then render
+// Initialize: load settings, ghost groups, sleeping groups, trigger auto-grouping, then render
 (async () => {
+  await loadSettings();
   await loadGhostGroups();
   await loadSleepingGroups();
   // Notify background to apply auto-grouping (if enabled)
@@ -1123,6 +1141,17 @@ async function render(source = 'unknown', forceRender = false) {
   await updateGroupMemberships();
   render('initial', true);
 })();
+
+// Listen for settings changes and re-render
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'sync' && changes.settings) {
+    const newSettings = changes.settings.newValue;
+    if (newSettings && newSettings.allWindows !== allWindows) {
+      allWindows = newSettings.allWindows || false;
+      render('settings-changed', true);
+    }
+  }
+});
 
 // Update countdown display in-place (no full re-render)
 setInterval(async () => {

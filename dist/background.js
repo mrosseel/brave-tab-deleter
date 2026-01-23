@@ -120,6 +120,7 @@
   console.log("=== BACKGROUND.JS VERSION 6 LOADED ===");
   var sidebarOpen = /* @__PURE__ */ new Map();
   var settings = {
+    allWindows: false,
     autoGrouping: false,
     autoOrdering: false,
     autoOrderingSeconds: 5,
@@ -213,7 +214,8 @@
     }
   });
   async function updateBadge() {
-    const tabs = await chrome.tabs.query({ currentWindow: true });
+    const queryOptions = settings.allWindows ? {} : { currentWindow: true };
+    const tabs = await chrome.tabs.query(queryOptions);
     chrome.action.setBadgeText({ text: tabs.length.toString() });
     chrome.action.setBadgeBackgroundColor({ color: "#6366f1" });
   }
@@ -335,8 +337,19 @@
   }
   async function applyAutoGroupingToAll() {
     if (!settings.autoGrouping && !settings.customGrouping) return;
-    const tabs = await chrome.tabs.query({ currentWindow: true });
-    const groups = await chrome.tabGroups.query({ windowId: chrome.windows.WINDOW_ID_CURRENT });
+    if (settings.allWindows) {
+      const windows = await chrome.windows.getAll({ windowTypes: ["normal"] });
+      for (const win of windows) {
+        await applyAutoGroupingToWindow(win.id);
+      }
+    } else {
+      const currentWindow = await chrome.windows.getCurrent();
+      await applyAutoGroupingToWindow(currentWindow.id);
+    }
+  }
+  async function applyAutoGroupingToWindow(windowId) {
+    const tabs = await chrome.tabs.query({ windowId });
+    const groups = await chrome.tabGroups.query({ windowId });
     const otherGroup = groups.find((g) => g.title === "Other" && g.color === "grey");
     const otherGroupId = otherGroup?.id;
     const customGroupTitles = new Set((settings.customGroups || []).map((g) => g.name));
@@ -402,7 +415,7 @@
       }
     }
     if (settings.autoGrouping) {
-      const updatedTabs = await chrome.tabs.query({ currentWindow: true });
+      const updatedTabs = await chrome.tabs.query({ windowId });
       const domainMap = /* @__PURE__ */ new Map();
       for (const tab of updatedTabs) {
         if (tab.groupId !== -1 && tab.groupId !== otherGroupId) continue;

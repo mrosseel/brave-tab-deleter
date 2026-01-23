@@ -24,6 +24,7 @@
 
   // settings.js
   var DEFAULT_SETTINGS = {
+    allWindows: false,
     autoGrouping: false,
     autoOrdering: false,
     autoOrderingSeconds: 5,
@@ -34,6 +35,7 @@
   var editingGroupId = null;
   var selectedColor = "blue";
   var backBtn = document.getElementById("back-btn");
+  var allWindowsToggle = document.getElementById("all-windows");
   var autoGroupingToggle = document.getElementById("auto-grouping");
   var autoOrderingToggle = document.getElementById("auto-ordering");
   var autoOrderingSeconds = document.getElementById("auto-ordering-seconds");
@@ -60,6 +62,7 @@
     chrome.runtime.sendMessage({ type: "settingsUpdated", settings });
   }
   function updateUI() {
+    allWindowsToggle.checked = settings.allWindows;
     autoGroupingToggle.checked = settings.autoGrouping;
     autoOrderingToggle.checked = settings.autoOrdering;
     autoOrderingSeconds.value = settings.autoOrderingSeconds;
@@ -175,6 +178,10 @@
   }
   backBtn.addEventListener("click", () => {
     window.location.href = "sidebar.html";
+  });
+  allWindowsToggle.addEventListener("change", () => {
+    settings.allWindows = allWindowsToggle.checked;
+    saveSettings();
   });
   autoGroupingToggle.addEventListener("change", () => {
     settings.autoGrouping = autoGroupingToggle.checked;
