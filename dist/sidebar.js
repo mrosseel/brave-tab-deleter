@@ -431,7 +431,7 @@
     for (const [groupId, tabs] of groupedTabs) {
       const group = groupMap.get(groupId);
       const tabIds = tabs.map((t) => `${t.id}:${t.active}:${t.title}:${t.audible}`).join(",");
-      parts.push(`g${groupId}:${group?.collapsed}:${group?.title}:${tabIds}`);
+      parts.push(`g${groupId}:${group?.collapsed}:${group?.title}:${group?.color}:${tabIds}`);
     }
     const ungroupedIds = ungroupedTabs.map((t) => `${t.id}:${t.active}:${t.title}:${t.audible}`).join(",");
     parts.push(`u:${ungroupedIds}`);
