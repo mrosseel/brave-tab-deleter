@@ -28,11 +28,21 @@ FEATURES:
 
 - Tab Count Badge - See your total tab count on the extension icon
 
+- Sleep Groups - Put tab groups to sleep to save memory. Sleeping groups save URLs and can be restored later
+
+- All Windows Mode - Optionally show and manage tabs from all browser windows in one sidebar
+
+- Audio Indicator - See which tabs are playing audio with a speaker icon on the favicon
+
 Works with Chrome and Brave browsers.
 
 ## Changelog
 
-### v1.1.0 (2025-01-22)
-- Add tab context menu with duplicate, close, move to group options
-- Add drag-and-drop tab reordering between groups
-- Improve UI styling and interactions
+### v1.2.0 (2026-01-23)
+- Add group sleep feature to save and restore tab groups
+- Add window scope setting to show tabs from current or all windows
+- Add audio indicator for tabs playing sound
+- Add Refresh Groups button to settings
+- Fix audio indicator updates instantly and overlays favicon
+- Fix prevent DOM errors when reverting drag during re-render
+- Fix improve tab grouping when navigating to new domains

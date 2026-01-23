@@ -1,6 +1,6 @@
 {
   "name": "tab-deleter",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Manage tabs from a sidebar panel with auto-grouping, custom groups, and drag-and-drop organization.",
   "type": "module",
   "scripts": {
