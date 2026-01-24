@@ -38,11 +38,8 @@ Works with Chrome and Brave browsers.
 
 ## Changelog
 
-### v1.2.0 (2026-01-23)
-- Add group sleep feature to save and restore tab groups
-- Add window scope setting to show tabs from current or all windows
-- Add audio indicator for tabs playing sound
-- Add Refresh Groups button to settings
-- Fix audio indicator updates instantly and overlays favicon
-- Fix prevent DOM errors when reverting drag during re-render
-- Fix improve tab grouping when navigating to new domains
+### v1.2.1 (2026-01-24)
+- Fix sidebar colors syncing when Chrome group color changes
+- Fix preserve manual groups when waking from sleep and fix sidebar toggle
+- Add scroll to focused tab in sidebar
+- Refactor shared modules for better code organization
