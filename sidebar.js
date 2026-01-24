@@ -1223,6 +1223,10 @@ setInterval(async () => {
   if (hadExpired) {
     ghostGroups = validGhosts;
     saveGhostGroups();
+    // Scroll to the first expired tab after it moves to "Other"
+    if (expiredTabIds.length > 0) {
+      pendingScrollToTabId = expiredTabIds[0];
+    }
     // Ungroup expired tabs so they move to "Other"
     for (const tabId of expiredTabIds) {
       try {

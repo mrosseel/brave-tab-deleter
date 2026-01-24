@@ -1,8 +1,8 @@
 # Dependencies
 node_modules/
 
-# Build output (included in repo for easy loading)
-# dist/
+# Build output
+dist/
 
 # Package files
 *.zip
