@@ -8,7 +8,10 @@
 </head>
 <body>
   <header class="sidebar-header">
-    <span class="header-title">Tabs</span>
+    <div class="header-left">
+      <span class="header-title">Tabs</span>
+      <span id="tab-count" class="header-count"></span>
+    </div>
     <div class="header-actions">
       <button class="header-btn" id="collapse-all-btn" title="Collapse all groups">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -41,6 +44,7 @@
 
   <!-- Context menu -->
   <div id="context-menu" class="context-menu">
+    <div class="context-menu-item" data-action="new-tab">New tab</div>
     <div class="context-menu-item" data-action="duplicate">Duplicate</div>
     <div class="context-menu-item" data-action="close">Close</div>
     <div class="context-menu-divider"></div>

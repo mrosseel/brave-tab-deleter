@@ -1,11 +1,12 @@
 import { getColorHex } from './lib/colors.js';
-import { RENDER_DEBOUNCE_MS, GHOST_COUNTDOWN_INTERVAL_MS, SIDEBAR_INIT_DELAY_MS } from './lib/constants.js';
+import { GHOST_COUNTDOWN_INTERVAL_MS, SIDEBAR_INIT_DELAY_MS } from './lib/constants.js';
 import { calculateTargetIndex, getDropPosition } from './lib/drag-position.js';
 import { GHOST_GROUP_SECONDS, createGhostEntry, filterExpiredGhosts, getGhostRemainingSeconds } from './lib/ghost.js';
 import { createSleepingGroupEntry, isValidSleepingGroup, canSleepGroup } from './lib/sleep.js';
 import { loadFromStorage, saveToStorage } from './lib/storage.js';
 
 const tabListEl = document.getElementById('tab-list');
+const tabCountEl = document.getElementById('tab-count');
 const settingsBtn = document.getElementById('settings-btn');
 const collapseAllBtn = document.getElementById('collapse-all-btn');
 const expandAllBtn = document.getElementById('expand-all-btn');
@@ -21,6 +22,91 @@ async function loadSettings() {
   const stored = await chrome.storage.sync.get('settings');
   if (stored.settings) {
     allWindows = stored.settings.allWindows || false;
+  }
+}
+
+// Optimistic UI helpers
+function removeTabElement(tabId) {
+  const tabEl = document.querySelector(`[data-tab-id="${tabId}"]`);
+  if (tabEl) {
+    const groupContainer = tabEl.closest('.tab-group');
+    tabEl.remove();
+    updateHeaderTabCount(-1);
+    // Update group tab count or remove empty group
+    if (groupContainer) {
+      const remainingTabs = groupContainer.querySelectorAll('.tab-item');
+      const countEl = groupContainer.querySelector('.tab-count');
+      if (remainingTabs.length === 0) {
+        groupContainer.remove();
+      } else if (countEl) {
+        countEl.textContent = `(${remainingTabs.length})`;
+      }
+    }
+  }
+}
+
+function removeGroupElement(groupId) {
+  const groupEl = document.querySelector(`[data-group-id="${groupId}"]`);
+  if (groupEl) {
+    const tabCount = groupEl.querySelectorAll('.tab-item').length;
+    groupEl.remove();
+    updateHeaderTabCount(-tabCount);
+  }
+}
+
+function updateHeaderTabCount(delta) {
+  const current = parseInt(tabCountEl.textContent.replace(/[()]/g, '')) || 0;
+  tabCountEl.textContent = `(${current + delta})`;
+}
+
+function scrollToTab(tabId) {
+  const tabEl = document.querySelector(`[data-tab-id="${tabId}"]`);
+  if (!tabEl) return;
+
+  const groupContainer = tabEl.closest('.tab-group');
+  const tabsContainer = groupContainer?.querySelector('.group-tabs');
+
+  if (tabsContainer?.classList.contains('collapsed')) {
+    const header = groupContainer?.querySelector('.group-header');
+    header?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  } else {
+    tabEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+}
+
+function moveTabToGroup(tabId, targetGroupId) {
+  const tabEl = document.querySelector(`[data-tab-id="${tabId}"]`);
+  if (!tabEl) return;
+
+  const targetGroup = document.querySelector(`[data-group-id="${targetGroupId}"]`);
+  if (!targetGroup) return;
+
+  const sourceGroup = tabEl.closest('.tab-group');
+  const targetTabsContainer = targetGroup.querySelector('.group-tabs');
+
+  if (targetTabsContainer) {
+    targetTabsContainer.appendChild(tabEl);
+
+    // Update source group count
+    if (sourceGroup) {
+      const sourceRemaining = sourceGroup.querySelectorAll('.tab-item');
+      const sourceCount = sourceGroup.querySelector('.tab-count');
+      if (sourceRemaining.length === 0) {
+        sourceGroup.remove();
+      } else if (sourceCount) {
+        sourceCount.textContent = `(${sourceRemaining.length})`;
+      }
+    }
+
+    // Update target group count
+    const targetCount = targetGroup.querySelector('.tab-count');
+    if (targetCount) {
+      const targetTabs = targetGroup.querySelectorAll('.tab-item');
+      targetCount.textContent = `(${targetTabs.length})`;
+    }
+
+    // Scroll to the moved tab
+    scrollToTab(tabId);
   }
 }
 
@@ -99,10 +185,11 @@ async function populateMoveToGroupSubmenu(tab) {
   const otherItem = document.createElement('div');
   otherItem.className = 'context-submenu-item';
   otherItem.innerHTML = `<span class="submenu-color-dot" style="background-color: ${getColorHex('grey')}"></span>Other`;
-  otherItem.addEventListener('click', async () => {
+  otherItem.addEventListener('click', () => {
     if (contextMenuTab) {
-      await chrome.tabs.ungroup(contextMenuTab.id);
+      moveTabToGroup(contextMenuTab.id, 'ungrouped');
       hideContextMenu();
+      chrome.tabs.ungroup(contextMenuTab.id);
     }
   });
   moveToGroupSubmenu.appendChild(otherItem);
@@ -122,36 +209,73 @@ async function populateMoveToGroupSubmenu(tab) {
     const item = document.createElement('div');
     item.className = 'context-submenu-item';
     item.innerHTML = `<span class="submenu-color-dot" style="background-color: ${getColorHex(group.color)}"></span>${group.title || 'Unnamed'}`;
-    item.addEventListener('click', async () => {
+    item.addEventListener('click', () => {
       if (contextMenuTab) {
-        await chrome.tabs.group({ tabIds: contextMenuTab.id, groupId: group.id });
+        moveTabToGroup(contextMenuTab.id, group.id);
         hideContextMenu();
+        chrome.tabs.group({ tabIds: contextMenuTab.id, groupId: group.id });
       }
     });
     moveToGroupSubmenu.appendChild(item);
   }
+
+  // Add divider before new group input
+  const newGroupDivider = document.createElement('div');
+  newGroupDivider.className = 'context-menu-divider';
+  moveToGroupSubmenu.appendChild(newGroupDivider);
+
+  // Add new group input
+  const newGroupItem = document.createElement('div');
+  newGroupItem.className = 'context-submenu-item new-group-input-container';
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'new-group-input';
+  input.placeholder = 'New group...';
+  input.addEventListener('click', (e) => e.stopPropagation());
+  input.addEventListener('keydown', async (e) => {
+    if (e.key === 'Enter' && input.value.trim() && contextMenuTab) {
+      const groupId = await chrome.tabs.group({ tabIds: contextMenuTab.id });
+      await chrome.tabGroups.update(groupId, { title: input.value.trim() });
+      hideContextMenu();
+    } else if (e.key === 'Escape') {
+      hideContextMenu();
+    }
+  });
+  newGroupItem.appendChild(input);
+  moveToGroupSubmenu.appendChild(newGroupItem);
 }
 
 async function handleContextMenuAction(action) {
   if (!contextMenuTab) return;
 
   const tabId = contextMenuTab.id;
+  const groupId = contextMenuTab.groupId;
 
   switch (action) {
+    case 'new-tab':
+      hideContextMenu();
+      const newTab = await chrome.tabs.create({ active: true });
+      if (groupId !== -1) {
+        await chrome.tabs.group({ tabIds: newTab.id, groupId });
+      }
+      break;
     case 'duplicate':
-      await chrome.tabs.duplicate(tabId);
+      hideContextMenu();
+      chrome.tabs.duplicate(tabId);
       break;
     case 'close':
+      removeTabElement(tabId);
+      hideContextMenu();
       ghostGroups.delete(tabId);
       saveGhostGroups();
-      await chrome.tabs.remove(tabId);
+      chrome.tabs.remove(tabId);
       break;
     case 'ungroup':
-      await chrome.tabs.ungroup(tabId);
+      moveTabToGroup(tabId, 'ungrouped');
+      hideContextMenu();
+      chrome.tabs.ungroup(tabId);
       break;
   }
-
-  hideContextMenu();
 }
 
 // Context menu event listeners
@@ -373,46 +497,14 @@ async function updateGroupMemberships() {
   groupMemberships = newMemberships;
 }
 
-// Track render calls and debounce
+// Track render calls
 let renderCount = 0;
-let renderTimeout = null;
 let lastStateHash = null;
 
 // Pending tab ID to scroll to after render completes
 let pendingScrollToTabId = null;
 
-// Debounced render - waits 300ms after last call to let grouping complete
-function debouncedRender(source) {
-  if (renderTimeout) {
-    clearTimeout(renderTimeout);
-  }
-  renderTimeout = setTimeout(() => {
-    renderTimeout = null;
-    render(source);
-  }, RENDER_DEBOUNCE_MS);
-}
 
-// Scroll to the focused tab (or its group header if collapsed)
-function scrollToFocusedTab(tabId) {
-  const tabElement = document.querySelector(`[data-tab-id="${tabId}"]`);
-
-  if (tabElement) {
-    // Check if parent group is collapsed
-    const groupContainer = tabElement.closest('.tab-group');
-    const tabsContainer = groupContainer?.querySelector('.group-tabs');
-
-    if (tabsContainer?.classList.contains('collapsed')) {
-      // Group is collapsed, scroll to header instead
-      const header = groupContainer?.querySelector('.group-header');
-      if (header) {
-        header.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      }
-    } else {
-      // Tab is visible, scroll to it
-      tabElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }
-  }
-}
 
 async function loadTabs() {
   // Query tabs based on window scope setting
@@ -603,18 +695,17 @@ function createTabElement(tab, groupInfo, onClose) {
   closeBtn.className = 'close-btn';
   closeBtn.innerHTML = '&times;';
   closeBtn.title = 'Close tab';
-  closeBtn.addEventListener('click', async (e) => {
+  closeBtn.addEventListener('click', (e) => {
     e.stopPropagation();
-    const scrollTop = document.documentElement.scrollTop || document.body.scrollTop;
 
     if (onClose) {
       onClose();
     }
 
-    console.log('[sidebar] Closing tab:', tab.id, 'groupId:', tab.groupId);
-    await chrome.tabs.remove(tab.id);
-    console.log('[sidebar] Tab removed');
-    window.scrollTo(0, scrollTop);
+    removeTabElement(tab.id);
+    ghostGroups.delete(tab.id);
+    saveGhostGroups();
+    chrome.tabs.remove(tab.id);
   });
 
   // Favicon wrapper for audio indicator overlay
@@ -871,14 +962,13 @@ function createHeaderRightSection(isGhost, ghostExpiresAt, isUngrouped, tabs, gr
     closeGroupBtn.className = 'close-group-btn';
     closeGroupBtn.innerHTML = '&times;';
     closeGroupBtn.title = isUngrouped ? 'Close all ungrouped tabs' : 'Close all tabs in group';
-    closeGroupBtn.addEventListener('click', async (e) => {
+    closeGroupBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      const scrollTop = document.documentElement.scrollTop || document.body.scrollTop;
       const tabIds = tabs.map(t => t.id);
+      removeGroupElement(isUngrouped ? 'ungrouped' : groupId);
       tabIds.forEach(id => ghostGroups.delete(id));
       saveGhostGroups();
-      await chrome.tabs.remove(tabIds);
-      window.scrollTo(0, scrollTop);
+      chrome.tabs.remove(tabIds);
     });
     rightSection.appendChild(closeGroupBtn);
   }
@@ -1050,6 +1140,13 @@ async function render(source = 'unknown', forceRender = false) {
 
   const { groupedTabs, ungroupedTabs, ghostTabs, groupMap, groupOrder } = await loadTabs();
 
+  // Update header tab count
+  let totalTabs = ungroupedTabs.length + ghostTabs.length;
+  for (const tabs of groupedTabs.values()) {
+    totalTabs += tabs.length;
+  }
+  tabCountEl.textContent = `(${totalTabs})`;
+
   // Skip render if state hasn't changed (unless forced)
   const stateHash = computeStateHash(groupedTabs, ungroupedTabs, ghostTabs, groupMap);
   if (!forceRender && stateHash === lastStateHash) {
@@ -1166,7 +1263,7 @@ async function render(source = 'unknown', forceRender = false) {
     const tabIdToScroll = pendingScrollToTabId;
     pendingScrollToTabId = null;
     // Use requestAnimationFrame to ensure DOM is rendered
-    requestAnimationFrame(() => scrollToFocusedTab(tabIdToScroll));
+    requestAnimationFrame(() => scrollToTab(tabIdToScroll));
   } else {
     window.scrollTo(0, scrollTop);
   }
@@ -1241,20 +1338,20 @@ setInterval(async () => {
   }
 }, GHOST_COUNTDOWN_INTERVAL_MS);
 
-chrome.tabs.onCreated.addListener(() => debouncedRender('tabs.onCreated'));
+chrome.tabs.onCreated.addListener(() => render('tabs.onCreated'));
 chrome.tabs.onRemoved.addListener(async (tabId) => {
   ghostGroups.delete(tabId);
   saveGhostGroups();
   // Check for 2→1 group transitions before rendering
   await updateGroupMemberships();
-  debouncedRender('tabs.onRemoved');
+  render('tabs.onRemoved');
 });
-chrome.tabs.onUpdated.addListener(() => debouncedRender('tabs.onUpdated'));
-chrome.tabs.onMoved.addListener(() => debouncedRender('tabs.onMoved'));
+chrome.tabs.onUpdated.addListener(() => render('tabs.onUpdated'));
+chrome.tabs.onMoved.addListener(() => render('tabs.onMoved'));
 chrome.tabs.onActivated.addListener((activeInfo) => {
   pendingScrollToTabId = activeInfo.tabId;
-  debouncedRender('tabs.onActivated');
+  render('tabs.onActivated');
 });
-chrome.tabGroups.onCreated.addListener(() => debouncedRender('tabGroups.onCreated'));
-chrome.tabGroups.onRemoved.addListener(() => debouncedRender('tabGroups.onRemoved'));
-chrome.tabGroups.onUpdated.addListener(() => debouncedRender('tabGroups.onUpdated'));
+chrome.tabGroups.onCreated.addListener(() => render('tabGroups.onCreated'));
+chrome.tabGroups.onRemoved.addListener(() => render('tabGroups.onRemoved'));
+chrome.tabGroups.onUpdated.addListener(() => render('tabGroups.onUpdated'));
