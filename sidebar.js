@@ -16,12 +16,14 @@ const ungroupOption = document.getElementById('ungroup-option');
 
 // Settings state
 let allWindows = false;
+let otherGroupName = 'Other';
 
 // Load settings from storage
 async function loadSettings() {
   const stored = await chrome.storage.sync.get('settings');
   if (stored.settings) {
     allWindows = stored.settings.allWindows || false;
+    otherGroupName = stored.settings.otherGroupName || 'Other';
   }
 }
 
@@ -181,10 +183,9 @@ async function populateMoveToGroupSubmenu(tab) {
 
   const groups = await chrome.tabGroups.query({ windowId: chrome.windows.WINDOW_ID_CURRENT });
 
-  // Add "Other" option first (ungrouped)
   const otherItem = document.createElement('div');
   otherItem.className = 'context-submenu-item';
-  otherItem.innerHTML = `<span class="submenu-color-dot" style="background-color: ${getColorHex('grey')}"></span>Other`;
+  otherItem.innerHTML = `<span class="submenu-color-dot" style="background-color: ${getColorHex('grey')}"></span>${otherGroupName}`;
   otherItem.addEventListener('click', () => {
     if (contextMenuTab) {
       moveTabToGroup(contextMenuTab.id, 'ungrouped');
@@ -392,11 +393,10 @@ async function saveSleepingGroups() {
 async function sleepGroup(groupId, groupInfo, tabs) {
   const windowId = tabs.length > 0 ? tabs[0].windowId : chrome.windows.WINDOW_ID_CURRENT;
 
-  // Check if this is a manual (non-auto) group
-  const response = await chrome.runtime.sendMessage({ type: 'isAutoGroup', groupId });
-  const isManual = !response.isAuto;
+  const response = await chrome.runtime.sendMessage({ type: 'getGroupType', groupId });
+  const groupType = response.groupType;
 
-  const entry = createSleepingGroupEntry(groupInfo, tabs, windowId, isManual);
+  const entry = createSleepingGroupEntry(groupInfo, tabs, windowId, groupType);
 
   sleepingGroups.set(entry.id, entry);
   await saveSleepingGroups();
@@ -437,9 +437,12 @@ async function wakeGroup(sleepId) {
         color: entry.color
       });
 
-      // If this was a manual group, mark it so auto-grouping won't touch it
-      if (entry.isManual) {
+      // Restore group type tracking
+      const restoredType = entry.groupType || (entry.isManual ? 'manual' : 'none');
+      if (restoredType === 'manual') {
         await chrome.runtime.sendMessage({ type: 'markManualGroup', groupId });
+      } else if (restoredType === 'auto') {
+        await chrome.runtime.sendMessage({ type: 'markAutoGroup', groupId });
       }
     } catch (e) {
       console.error('Failed to group woken tabs:', e);
@@ -882,7 +885,7 @@ async function getLastTabIndexOfGroup(groupEl) {
 }
 
 // Create the header element for a group
-function createGroupHeader(groupInfo, isGhost, isUngrouped, ghostExpiresAt, tabs, groupId, isSleeping = false, sleepId = null) {
+function createGroupHeader(groupInfo, isGhost, isUngrouped, ghostExpiresAt, tabs, groupId, isSleeping = false, sleepId = null, groupType = 'none') {
   const isCollapsed = groupInfo?.collapsed || false;
   const header = document.createElement('div');
   header.className = 'group-header' + (isCollapsed ? ' collapsed' : '');
@@ -913,6 +916,29 @@ function createGroupHeader(groupInfo, isGhost, isUngrouped, ghostExpiresAt, tabs
 
   header.appendChild(collapseIcon);
   header.appendChild(groupName);
+
+  if (groupType !== 'auto' && !isUngrouped && !isGhost && !isSleeping) {
+    const badge = document.createElement('span');
+    badge.className = 'manual-badge';
+    badge.textContent = 'M';
+    badge.title = 'Manual group — click to release to auto-management';
+    badge.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      if (!confirm('Release this group? Tabs will be ungrouped and auto-grouping will re-sort them.')) return;
+      try {
+        const groupTabs = await chrome.tabs.query({ groupId });
+        const tabIds = groupTabs.map(t => t.id);
+        if (tabIds.length > 0) {
+          await chrome.tabs.ungroup(tabIds);
+          await chrome.runtime.sendMessage({ type: 'refreshAll' });
+        }
+      } catch (err) {
+        console.error('Failed to release manual group:', err);
+      }
+    });
+    groupName.appendChild(badge);
+  }
+
   header.appendChild(rightSection);
 
   return header;
@@ -928,7 +954,7 @@ function createHeaderRightSection(isGhost, ghostExpiresAt, isUngrouped, tabs, gr
     const countdownEl = document.createElement('span');
     countdownEl.className = 'countdown';
     countdownEl.textContent = `${remainingSeconds}s`;
-    countdownEl.title = 'Tab will move to Other when timer expires';
+    countdownEl.title = `Tab will move to ${otherGroupName} when timer expires`;
     rightSection.appendChild(countdownEl);
   }
 
@@ -1100,7 +1126,7 @@ function setupCollapseHandler(header, tabsContainer, groupInfo, isUngrouped) {
   });
 }
 
-function createGroupElement(groupId, groupInfo, tabs, isUngrouped = false, isGhost = false, ghostExpiresAt = null, positionIndex = 0, isSleeping = false, sleepId = null) {
+function createGroupElement(groupId, groupInfo, tabs, isUngrouped = false, isGhost = false, ghostExpiresAt = null, positionIndex = 0, isSleeping = false, sleepId = null, groupType = 'none') {
   const container = document.createElement('div');
   let className = 'tab-group';
   if (isGhost) className += ' ghost-group';
@@ -1114,7 +1140,7 @@ function createGroupElement(groupId, groupInfo, tabs, isUngrouped = false, isGho
     setupGroupDragHandlers(container, groupId, tabs, groupInfo);
   }
 
-  const header = createGroupHeader(groupInfo, isGhost, isUngrouped, ghostExpiresAt, tabs, groupId, isSleeping, sleepId);
+  const header = createGroupHeader(groupInfo, isGhost, isUngrouped, ghostExpiresAt, tabs, groupId, isSleeping, sleepId, groupType);
 
   let tabsContainer;
   if (isSleeping) {
@@ -1156,6 +1182,17 @@ async function render(source = 'unknown', forceRender = false) {
 
   tabListEl.innerHTML = '';
 
+  // Fetch group types for all real groups
+  const groupTypes = new Map();
+  await Promise.all(groupOrder.map(async (groupId) => {
+    try {
+      const resp = await chrome.runtime.sendMessage({ type: 'getGroupType', groupId });
+      groupTypes.set(groupId, resp.groupType);
+    } catch {
+      groupTypes.set(groupId, 'none');
+    }
+  }));
+
   // Build combined list of all items with their first tab index for ordering
   const renderItems = [];
 
@@ -1168,6 +1205,7 @@ async function render(source = 'unknown', forceRender = false) {
       groupId,
       tabs,
       groupInfo: groupMap.get(groupId),
+      groupType: groupTypes.get(groupId) || 'none',
       firstTabIndex: firstIndex
     });
   });
@@ -1218,12 +1256,15 @@ async function render(source = 'unknown', forceRender = false) {
         false,
         false,
         null,
-        index
+        index,
+        false,
+        null,
+        item.groupType
       ));
     } else if (item.type === 'ungrouped') {
       tabListEl.appendChild(createGroupElement(
         'ungrouped',
-        { title: 'Other', color: 'grey', collapsed: otherCollapsed },
+        { title: otherGroupName, color: 'grey', collapsed: otherCollapsed },
         item.tabs,
         true,
         false,
@@ -1287,8 +1328,16 @@ async function render(source = 'unknown', forceRender = false) {
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'sync' && changes.settings) {
     const newSettings = changes.settings.newValue;
+    let needsRender = false;
     if (newSettings && newSettings.allWindows !== allWindows) {
       allWindows = newSettings.allWindows || false;
+      needsRender = true;
+    }
+    if (newSettings && newSettings.otherGroupName !== otherGroupName) {
+      otherGroupName = newSettings.otherGroupName || 'Other';
+      needsRender = true;
+    }
+    if (needsRender) {
       render('settings-changed', true);
     }
   }

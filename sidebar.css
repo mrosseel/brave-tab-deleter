@@ -549,3 +549,21 @@ body {
 .sleeping-tabs .tab-item .close-btn {
   display: none;
 }
+
+/* Manual group badge — sits right after group name text */
+.manual-badge {
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--close-btn-color);
+  margin-left: 4px;
+  text-transform: none;
+  cursor: pointer;
+  padding: 1px 4px;
+  border-radius: 3px;
+  vertical-align: super;
+}
+
+.manual-badge:hover {
+  background-color: rgba(128, 128, 128, 0.2);
+  color: var(--text-color);
+}

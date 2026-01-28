@@ -29,23 +29,31 @@ describe('createSleepingGroupEntry', () => {
     expect(entry.tabs).toHaveLength(2);
     expect(entry.sleepedAt).toBe(Date.now());
     expect(entry.originalWindowId).toBe(123);
-    expect(entry.isManual).toBe(false);
+    expect(entry.groupType).toBe('none');
   });
 
-  it('defaults isManual to false', () => {
+  it('defaults groupType to none', () => {
     const groupInfo = { id: 1, title: 'Test', color: 'blue' };
     const tabs = [{ url: 'https://example.com', title: 'Test' }];
     const entry = createSleepingGroupEntry(groupInfo, tabs, 1);
 
-    expect(entry.isManual).toBe(false);
+    expect(entry.groupType).toBe('none');
   });
 
-  it('sets isManual to true when specified', () => {
+  it('sets groupType to manual when specified', () => {
     const groupInfo = { id: 1, title: 'Test', color: 'blue' };
     const tabs = [{ url: 'https://example.com', title: 'Test' }];
-    const entry = createSleepingGroupEntry(groupInfo, tabs, 1, true);
+    const entry = createSleepingGroupEntry(groupInfo, tabs, 1, 'manual');
 
-    expect(entry.isManual).toBe(true);
+    expect(entry.groupType).toBe('manual');
+  });
+
+  it('sets groupType to auto when specified', () => {
+    const groupInfo = { id: 1, title: 'Test', color: 'blue' };
+    const tabs = [{ url: 'https://example.com', title: 'Test' }];
+    const entry = createSleepingGroupEntry(groupInfo, tabs, 1, 'auto');
+
+    expect(entry.groupType).toBe('auto');
   });
 
   it('maps tab data correctly', () => {

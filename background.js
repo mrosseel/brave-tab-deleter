@@ -82,11 +82,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     });
     sendResponse({ success: true });
     return true;
-  } else if (message.type === 'isAutoGroup') {
-    sendResponse({ isAuto: isAutoGroupId(message.groupId) });
+  } else if (message.type === 'getGroupType') {
+    const groupId = message.groupId;
+    if (groupId === -1 || groupId === undefined) {
+      sendResponse({ groupType: 'none' });
+    } else if (isAutoGroupId(groupId)) {
+      sendResponse({ groupType: 'auto' });
+    } else if (isManualGroupId(groupId)) {
+      sendResponse({ groupType: 'manual' });
+    } else {
+      sendResponse({ groupType: 'none' });
+    }
     return true;
   } else if (message.type === 'markManualGroup') {
     markAsManualGroup(message.groupId);
+    sendResponse({ success: true });
+    return true;
+  } else if (message.type === 'markAutoGroup') {
+    markAsAutoGroup(message.groupId);
     sendResponse({ success: true });
     return true;
   }
@@ -204,6 +217,9 @@ async function groupSingleTab(tab) {
     return; // Tab no longer exists
   }
 
+  // Skip tabs in manual groups
+  if (currentTab.groupId !== -1 && isManualGroupId(currentTab.groupId)) return;
+
   const hostname = getHostname(tab.url);
 
   // 1. Check custom groups first (highest priority)
@@ -312,9 +328,17 @@ async function applyAutoGroupingToWindow(windowId) {
   const tabs = await chrome.tabs.query({ windowId });
   const groups = await chrome.tabGroups.query({ windowId });
 
+  // Re-classify existing groups that look like auto groups (e.g., after browser restart)
+  for (const group of groups) {
+    if (!isAutoGroupId(group.id) && !isManualGroupId(group.id)) {
+      await checkAndUpdateGroupStatus(group.id);
+    }
+  }
+
   // Find "Other" group and identify custom groups by title
-  const otherGroup = groups.find(g => g.title === 'Other' && g.color === 'grey');
+  const otherGroup = groups.find(g => g.title === settings.otherGroupName && g.color === 'grey');
   const otherGroupId = otherGroup?.id;
+  if (otherGroupId) markAsAutoGroup(otherGroupId);
   const customGroupTitles = new Set((settings.customGroups || []).map(g => g.name));
   const customGroupIds = new Set(groups.filter(g => customGroupTitles.has(g.title)).map(g => g.id));
 
@@ -366,8 +390,9 @@ async function applyAutoGroupingToWindow(windowId) {
 
     for (const tab of tabs) {
       // Allow ungrouped tabs, "Other" group, and auto-created groups
-      // Skip tabs already in custom groups
+      // Skip tabs already in custom groups or manual groups
       if (tab.groupId !== -1 && tab.groupId !== otherGroupId && customGroupIds.has(tab.groupId)) continue;
+      if (tab.groupId !== -1 && isManualGroupId(tab.groupId)) continue;
       if (shouldSkipUrl(tab.url)) continue;
 
       const hostname = getHostname(tab.url);
@@ -404,8 +429,9 @@ async function applyAutoGroupingToWindow(windowId) {
     const domainMap = new Map();
 
     for (const tab of updatedTabs) {
-      // Only ungrouped and "Other" tabs
+      // Only ungrouped and "Other" tabs, skip manual groups
       if (tab.groupId !== -1 && tab.groupId !== otherGroupId) continue;
+      if (tab.groupId !== -1 && isManualGroupId(tab.groupId)) continue;
       if (shouldSkipUrl(tab.url)) continue;
 
       const domain = getDomain(tab.url);
@@ -427,6 +453,10 @@ async function applyAutoGroupingToWindow(windowId) {
       const existingGroup = await findAutoGroupForDomain(domainTabs[0].windowId, domain);
 
       if (existingGroup) {
+        // Re-mark as auto (may have lost tracking after restart)
+        if (!isAutoGroupId(existingGroup.id)) {
+          markAsAutoGroup(existingGroup.id);
+        }
         // Only add tabs that aren't already in this group
         const tabsToAdd = domainTabs.filter(t => t.groupId !== existingGroup.id);
         if (tabsToAdd.length > 0) {

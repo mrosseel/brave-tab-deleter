@@ -22,6 +22,7 @@ const groupDomainsInput = document.getElementById('group-domains');
 const colorPicker = document.getElementById('color-picker');
 const modalCancel = document.getElementById('modal-cancel');
 const modalSave = document.getElementById('modal-save');
+const otherGroupNameInput = document.getElementById('other-group-name');
 const refreshBtn = document.getElementById('refresh-btn');
 
 // Load settings from storage
@@ -46,6 +47,7 @@ function updateUI() {
   autoGroupingToggle.checked = settings.autoGrouping;
   autoOrderingToggle.checked = settings.autoOrdering;
   autoOrderingSeconds.value = settings.autoOrderingSeconds;
+  otherGroupNameInput.value = settings.otherGroupName || 'Other';
   customGroupingToggle.checked = settings.customGrouping;
   renderCustomGroups();
 }
@@ -209,6 +211,11 @@ autoOrderingToggle.addEventListener('change', () => {
 
 autoOrderingSeconds.addEventListener('change', () => {
   settings.autoOrderingSeconds = parseInt(autoOrderingSeconds.value) || 5;
+  saveSettings();
+});
+
+otherGroupNameInput.addEventListener('input', () => {
+  settings.otherGroupName = otherGroupNameInput.value.trim() || 'Other';
   saveSettings();
 });
 
