@@ -166,10 +166,10 @@ async function findGroupByTitleAndColor(windowId, title, color) {
 
 // Find existing auto-created group for domain (by title, any color)
 async function findAutoGroupForDomain(windowId, domain) {
-  const expectedTitle = getShortName(domain);
+  const expectedTitle = getShortName(domain).toLowerCase();
   const groups = await chrome.tabGroups.query({ windowId });
-  // Find by title - auto groups can have any color now
-  return groups.find(g => g.title === expectedTitle);
+  // Find by title (case-insensitive) - auto groups can have any color now
+  return groups.find(g => g.title?.toLowerCase() === expectedTitle);
 }
 
 // Get colors reserved by custom groups
