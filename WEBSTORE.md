@@ -38,8 +38,12 @@ Works with Chrome and Brave browsers.
 
 ## Changelog
 
-### v1.2.1 (2026-01-24)
-- Fix sidebar colors syncing when Chrome group color changes
-- Fix preserve manual groups when waking from sleep and fix sidebar toggle
-- Add scroll to focused tab in sidebar
-- Refactor shared modules for better code organization
+### v1.3.0 (2026-02-03)
+- Add manual group protection to prevent auto-ungrouping
+- Add sleep group type indicator
+- Add customizable "Other" group name in settings
+- Add tab count in group headers
+- Add optimistic UI updates for faster responsiveness
+- Add open new tab in current group via right-click
+- Add scroll to tab when moved to Other group
+- Fix case-insensitive group title matching for auto-grouping
