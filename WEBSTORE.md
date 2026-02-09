@@ -32,11 +32,7 @@ Works with Chrome and Brave browsers.
 
 ## Changelog
 
-### v1.4.0 (2026-02-09)
-- Add event bus system for centralized event handling
-- Sleeping groups now sync across all browser windows
-- Settings changes (like badge mode) now update immediately
-- Fix multi-select drag dropping tabs in wrong order
-- Fix tab rendering bug where new tabs weren't displayed
-- Add inline group renaming with double-click
-- Add multi-select tab support with drag badge
+### v1.4.1 (2026-02-09)
+- Fix two-part TLD detection for all country codes (com.be, co.fr, org.nz, etc.)
+- Fix ghost tab dragging to other groups
+- Prevent re-renders during async drag operations

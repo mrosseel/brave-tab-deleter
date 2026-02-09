@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isIPAddress, getDomain, getShortName, TWO_PART_TLDS } from '../lib/domain.js';
+import { isIPAddress, getDomain, getShortName, isTwoPartTLD } from '../lib/domain.js';
 
 describe('isIPAddress', () => {
   it('returns true for IPv4 addresses', () => {
@@ -44,6 +44,10 @@ describe('getDomain', () => {
     expect(getDomain('https://sub.example.co.jp')).toBe('example.co.jp');
     expect(getDomain('https://amazon.com.be')).toBe('amazon.com.be');
     expect(getDomain('https://www.amazon.com.be')).toBe('amazon.com.be');
+    // Dynamic detection - works for any country code
+    expect(getDomain('https://shop.example.com.fr')).toBe('example.com.fr');
+    expect(getDomain('https://news.site.co.za')).toBe('site.co.za');
+    expect(getDomain('https://test.org.nz')).toBe('test.org.nz');
   });
 
   it('preserves IP addresses', () => {
@@ -81,6 +85,10 @@ describe('getShortName', () => {
     expect(getShortName('example.com.au')).toBe('example');
     expect(getShortName('test.co.jp')).toBe('test');
     expect(getShortName('amazon.com.be')).toBe('amazon');
+    // Dynamic detection - works for any country code
+    expect(getShortName('site.com.fr')).toBe('site');
+    expect(getShortName('example.co.za')).toBe('example');
+    expect(getShortName('test.org.nz')).toBe('test');
   });
 
   it('preserves IP addresses', () => {
@@ -98,11 +106,22 @@ describe('getShortName', () => {
   });
 });
 
-describe('TWO_PART_TLDS', () => {
-  it('contains expected TLDs', () => {
-    expect(TWO_PART_TLDS).toContain('co.uk');
-    expect(TWO_PART_TLDS).toContain('com.au');
-    expect(TWO_PART_TLDS).toContain('co.jp');
-    expect(TWO_PART_TLDS).toContain('com.be');
+describe('isTwoPartTLD', () => {
+  it('detects common two-part TLDs', () => {
+    expect(isTwoPartTLD('co.uk')).toBe(true);
+    expect(isTwoPartTLD('com.au')).toBe(true);
+    expect(isTwoPartTLD('co.jp')).toBe(true);
+    expect(isTwoPartTLD('com.be')).toBe(true);
+    expect(isTwoPartTLD('org.uk')).toBe(true);
+    expect(isTwoPartTLD('net.nz')).toBe(true);
+    expect(isTwoPartTLD('com.fr')).toBe(true);
+    expect(isTwoPartTLD('co.za')).toBe(true);
+  });
+
+  it('rejects non-two-part TLDs', () => {
+    expect(isTwoPartTLD('com')).toBe(false);
+    expect(isTwoPartTLD('co')).toBe(false);
+    expect(isTwoPartTLD('google.com')).toBe(false);
+    expect(isTwoPartTLD('xyz.abc')).toBe(false);
   });
 });
