@@ -32,12 +32,11 @@ Works with Chrome and Brave browsers.
 
 ## Changelog
 
-### v1.3.0 (2026-02-03)
-- Add manual group protection to prevent auto-ungrouping
-- Add sleep group type indicator
-- Add customizable "Other" group name in settings
-- Add tab count in group headers
-- Add optimistic UI updates for faster responsiveness
-- Add open new tab in current group via right-click
-- Add scroll to tab when moved to Other group
-- Fix case-insensitive group title matching for auto-grouping
+### v1.4.0 (2026-02-09)
+- Add event bus system for centralized event handling
+- Sleeping groups now sync across all browser windows
+- Settings changes (like badge mode) now update immediately
+- Fix multi-select drag dropping tabs in wrong order
+- Fix tab rendering bug where new tabs weren't displayed
+- Add inline group renaming with double-click
+- Add multi-select tab support with drag badge
