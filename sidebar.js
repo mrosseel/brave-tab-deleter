@@ -673,7 +673,7 @@ function createTabElement(tab, groupInfo, onClose) {
   // Drag end - commit the move
   div.addEventListener('dragend', async () => {
     div.classList.remove('dragging');
-    isDragging = false; // Re-enable renders (DOM queries below are sync, safe before any await)
+    // Keep isDragging true until all async operations complete
 
     if (draggedTabs.length > 0 && draggedElements.length > 0) {
       const primaryElement = draggedElements[0];
@@ -694,6 +694,14 @@ function createTabElement(tab, groupInfo, onClose) {
         const prevTabId = prevTab?.dataset?.tabId ? parseInt(prevTab.dataset.tabId) : null;
 
         try {
+          // Clear ghost status for any dragged ghost tabs
+          for (const tabId of allTabIds) {
+            if (ghostGroups.has(tabId)) {
+              ghostGroups.delete(tabId);
+            }
+          }
+          saveGhostGroups();
+
           // Sort selected tabs by current index to preserve relative order
           const tabsWithIndex = await Promise.all(allTabIds.map(async id => ({
             id,
@@ -776,7 +784,7 @@ function createTabElement(tab, groupInfo, onClose) {
 
           render('tab-drag-complete');
         } catch (err) {
-          console.error('Failed to move tab(s):', err);
+          console.error('Failed to move tab(s):', err, 'targetGroupId:', targetGroupId, 'allTabIds:', allTabIds);
           // Revert primary to original position
           const orig = primaryOriginal;
           if (orig.parent && document.contains(orig.parent)) {
@@ -790,6 +798,7 @@ function createTabElement(tab, groupInfo, onClose) {
       }
     }
 
+    isDragging = false; // Re-enable renders after all async operations complete
     draggedTabs = [];
     draggedElements = [];
     originalPositions = [];

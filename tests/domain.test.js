@@ -42,6 +42,8 @@ describe('getDomain', () => {
     expect(getDomain('https://news.bbc.co.uk')).toBe('bbc.co.uk');
     expect(getDomain('https://example.com.au')).toBe('example.com.au');
     expect(getDomain('https://sub.example.co.jp')).toBe('example.co.jp');
+    expect(getDomain('https://amazon.com.be')).toBe('amazon.com.be');
+    expect(getDomain('https://www.amazon.com.be')).toBe('amazon.com.be');
   });
 
   it('preserves IP addresses', () => {
@@ -78,6 +80,7 @@ describe('getShortName', () => {
     expect(getShortName('bbc.co.uk')).toBe('bbc');
     expect(getShortName('example.com.au')).toBe('example');
     expect(getShortName('test.co.jp')).toBe('test');
+    expect(getShortName('amazon.com.be')).toBe('amazon');
   });
 
   it('preserves IP addresses', () => {
@@ -100,5 +103,6 @@ describe('TWO_PART_TLDS', () => {
     expect(TWO_PART_TLDS).toContain('co.uk');
     expect(TWO_PART_TLDS).toContain('com.au');
     expect(TWO_PART_TLDS).toContain('co.jp');
+    expect(TWO_PART_TLDS).toContain('com.be');
   });
 });
