@@ -112,8 +112,22 @@ function moveTabToGroup(tabId, targetGroupId) {
   }
 }
 
+// Selection state
+let selectedTabIds = new Set();
+let lastClickedTabId = null;
+
+function clearSelection() {
+  selectedTabIds.clear();
+  document.querySelectorAll('.tab-item.selected').forEach(el => el.classList.remove('selected'));
+}
+
+function getOrderedTabIds() {
+  return Array.from(document.querySelectorAll('.tab-item[data-tab-id]'))
+    .map(el => parseInt(el.dataset.tabId));
+}
+
 // Context menu state
-let contextMenuTab = null;
+let contextMenuTabs = [];
 // Settings button click handler
 settingsBtn.addEventListener('click', () => {
   window.location.href = 'settings.html';
@@ -127,20 +141,32 @@ function hideContextMenu() {
   if (expandedItem) {
     expandedItem.classList.remove('expanded');
   }
-  contextMenuTab = null;
+  contextMenuTabs = [];
 }
 
 async function showContextMenu(e, tab) {
   e.preventDefault();
   e.stopPropagation();
 
-  contextMenuTab = tab;
+  // If right-clicked tab is in selection, act on all selected; otherwise just this tab
+  if (selectedTabIds.has(tab.id)) {
+    const ordered = getOrderedTabIds();
+    contextMenuTabs = ordered.filter(id => selectedTabIds.has(id))
+      .map(id => {
+        const el = document.querySelector(`[data-tab-id="${id}"]`);
+        return { id, groupId: parseInt(el?.closest('.tab-group')?.dataset.groupId) || -1 };
+      });
+  } else {
+    clearSelection();
+    contextMenuTabs = [tab];
+  }
 
-  // Show/hide ungroup option based on whether tab is in a group
-  ungroupOption.style.display = tab.groupId !== -1 ? 'block' : 'none';
+  // Show/hide ungroup option based on whether any tab is in a group
+  const anyInGroup = contextMenuTabs.some(t => t.groupId !== -1 && !isNaN(t.groupId));
+  ungroupOption.style.display = anyInGroup ? 'block' : 'none';
 
   // Populate move-to-group submenu
-  await populateMoveToGroupSubmenu(tab);
+  await populateMoveToGroupSubmenu();
 
   // Reset position and classes for measurement
   contextMenu.style.left = '0px';
@@ -178,19 +204,20 @@ async function showContextMenu(e, tab) {
   contextMenu.style.top = `${y}px`;
 }
 
-async function populateMoveToGroupSubmenu(tab) {
+async function populateMoveToGroupSubmenu() {
   moveToGroupSubmenu.innerHTML = '';
 
   const groups = await chrome.tabGroups.query({ windowId: chrome.windows.WINDOW_ID_CURRENT });
+  const tabIds = contextMenuTabs.map(t => t.id);
 
   const otherItem = document.createElement('div');
   otherItem.className = 'context-submenu-item';
   otherItem.innerHTML = `<span class="submenu-color-dot" style="background-color: ${getColorHex('grey')}"></span>${otherGroupName}`;
   otherItem.addEventListener('click', () => {
-    if (contextMenuTab) {
-      moveTabToGroup(contextMenuTab.id, 'ungrouped');
+    if (contextMenuTabs.length > 0) {
+      for (const t of contextMenuTabs) moveTabToGroup(t.id, 'ungrouped');
       hideContextMenu();
-      chrome.tabs.ungroup(contextMenuTab.id);
+      chrome.tabs.ungroup(tabIds);
     }
   });
   moveToGroupSubmenu.appendChild(otherItem);
@@ -202,19 +229,23 @@ async function populateMoveToGroupSubmenu(tab) {
     moveToGroupSubmenu.appendChild(divider);
   }
 
+  // Collect group IDs that ALL selected tabs share (skip those)
+  const allInSameGroup = contextMenuTabs.length > 0 &&
+    contextMenuTabs.every(t => t.groupId === contextMenuTabs[0].groupId);
+  const skipGroupId = allInSameGroup ? contextMenuTabs[0].groupId : null;
+
   // Add each group
   for (const group of groups) {
-    // Skip the group the tab is already in
-    if (tab.groupId === group.id) continue;
+    if (skipGroupId === group.id) continue;
 
     const item = document.createElement('div');
     item.className = 'context-submenu-item';
     item.innerHTML = `<span class="submenu-color-dot" style="background-color: ${getColorHex(group.color)}"></span>${group.title || 'Unnamed'}`;
     item.addEventListener('click', () => {
-      if (contextMenuTab) {
-        moveTabToGroup(contextMenuTab.id, group.id);
+      if (contextMenuTabs.length > 0) {
+        for (const t of contextMenuTabs) moveTabToGroup(t.id, group.id);
         hideContextMenu();
-        chrome.tabs.group({ tabIds: contextMenuTab.id, groupId: group.id });
+        chrome.tabs.group({ tabIds, groupId: group.id });
       }
     });
     moveToGroupSubmenu.appendChild(item);
@@ -234,8 +265,8 @@ async function populateMoveToGroupSubmenu(tab) {
   input.placeholder = 'New group...';
   input.addEventListener('click', (e) => e.stopPropagation());
   input.addEventListener('keydown', async (e) => {
-    if (e.key === 'Enter' && input.value.trim() && contextMenuTab) {
-      const groupId = await chrome.tabs.group({ tabIds: contextMenuTab.id });
+    if (e.key === 'Enter' && input.value.trim() && contextMenuTabs.length > 0) {
+      const groupId = await chrome.tabs.group({ tabIds });
       await chrome.tabGroups.update(groupId, { title: input.value.trim() });
       hideContextMenu();
     } else if (e.key === 'Escape') {
@@ -247,34 +278,37 @@ async function populateMoveToGroupSubmenu(tab) {
 }
 
 async function handleContextMenuAction(action) {
-  if (!contextMenuTab) return;
+  if (contextMenuTabs.length === 0) return;
 
-  const tabId = contextMenuTab.id;
-  const groupId = contextMenuTab.groupId;
+  const tabIds = contextMenuTabs.map(t => t.id);
+  const firstTab = contextMenuTabs[0];
 
   switch (action) {
     case 'new-tab':
       hideContextMenu();
       const newTab = await chrome.tabs.create({ active: true });
-      if (groupId !== -1) {
-        await chrome.tabs.group({ tabIds: newTab.id, groupId });
+      if (firstTab.groupId !== -1) {
+        await chrome.tabs.group({ tabIds: newTab.id, groupId: firstTab.groupId });
       }
       break;
     case 'duplicate':
       hideContextMenu();
-      chrome.tabs.duplicate(tabId);
+      for (const id of tabIds) chrome.tabs.duplicate(id);
       break;
     case 'close':
-      removeTabElement(tabId);
+      for (const id of tabIds) removeTabElement(id);
       hideContextMenu();
-      ghostGroups.delete(tabId);
+      for (const id of tabIds) {
+        ghostGroups.delete(id);
+      }
       saveGhostGroups();
-      chrome.tabs.remove(tabId);
+      chrome.tabs.remove(tabIds);
+      clearSelection();
       break;
     case 'ungroup':
-      moveTabToGroup(tabId, 'ungrouped');
+      for (const id of tabIds) moveTabToGroup(id, 'ungrouped');
       hideContextMenu();
-      chrome.tabs.ungroup(tabId);
+      chrome.tabs.ungroup(tabIds);
       break;
   }
 }
@@ -297,15 +331,26 @@ contextMenu.addEventListener('click', (e) => {
   }
 });
 
-// Hide context menu when clicking outside
+// Hide context menu and clear selection when clicking outside
 document.addEventListener('click', (e) => {
   if (!contextMenu.contains(e.target)) {
     hideContextMenu();
+  }
+  if (!e.target.closest('.tab-item') && !contextMenu.contains(e.target)) {
+    clearSelection();
   }
 });
 
 // Hide context menu on scroll
 document.addEventListener('scroll', hideContextMenu);
+
+// Escape clears selection and hides context menu
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    clearSelection();
+    hideContextMenu();
+  }
+});
 
 // Collapse all groups
 collapseAllBtn.addEventListener('click', async () => {
@@ -333,11 +378,11 @@ expandAllBtn.addEventListener('click', async () => {
   render('expand-all', true);
 });
 
-// Drag and drop state for tabs
-let draggedTab = null;
-let draggedElement = null;
-let originalParent = null;
-let originalNextSibling = null;
+// Drag and drop state for tabs (arrays to support multi-select drag)
+let draggedTabs = [];       // array of { tabId, groupId }
+let draggedElements = [];   // array of DOM elements, first = primary
+let originalPositions = []; // array of { parent, nextSibling }
+let isDragging = false;     // Prevents renders from rebuilding DOM mid-drag
 
 // Drag and drop state for groups
 let draggedGroup = null;
@@ -390,8 +435,12 @@ async function saveSleepingGroups() {
 }
 
 // Sleep a group: save tabs and close them
-async function sleepGroup(groupId, groupInfo, tabs) {
-  const windowId = tabs.length > 0 ? tabs[0].windowId : chrome.windows.WINDOW_ID_CURRENT;
+async function sleepGroup(groupId, groupInfo) {
+  // Query fresh tabs from Chrome to include any recently dragged-in tabs
+  const tabs = await chrome.tabs.query({ groupId });
+  if (tabs.length === 0) return;
+
+  const windowId = tabs[0].windowId;
 
   const response = await chrome.runtime.sendMessage({ type: 'getGroupType', groupId });
   const groupType = response.groupType;
@@ -502,7 +551,6 @@ async function updateGroupMemberships() {
 
 // Track render calls
 let renderCount = 0;
-let lastStateHash = null;
 
 // Pending tab ID to scroll to after render completes
 let pendingScrollToTabId = null;
@@ -530,11 +578,18 @@ async function loadTabs() {
   const ghostTabs = []; // Tabs that should appear in ghost groups
   const groupOrder = []; // Track order groups appear (for position tracking)
 
-  // Clean up expired ghost groups
+  // Clean up expired ghost groups and ungroup their tabs
   const { validGhosts, hadExpired } = filterExpiredGhosts(ghostGroups);
   if (hadExpired) {
+    const expiredTabIds = [];
+    for (const [tabId] of ghostGroups) {
+      if (!validGhosts.has(tabId)) expiredTabIds.push(tabId);
+    }
     ghostGroups = validGhosts;
     saveGhostGroups();
+    for (const tabId of expiredTabIds) {
+      try { await chrome.tabs.ungroup(tabId); } catch { /* already ungrouped */ }
+    }
   }
 
   for (const tab of tabs) {
@@ -559,37 +614,6 @@ async function loadTabs() {
   return { groupedTabs, ungroupedTabs, ghostTabs, groupMap, groupOrder, windowId: currentWindowId };
 }
 
-// Compute a hash of the current state for comparison
-function computeStateHash(groupedTabs, ungroupedTabs, ghostTabs, groupMap) {
-  const parts = [];
-
-  // Hash grouped tabs
-  for (const [groupId, tabs] of groupedTabs) {
-    const group = groupMap.get(groupId);
-    const tabIds = tabs.map(t => `${t.id}:${t.active}:${t.title}:${t.audible}`).join(',');
-    parts.push(`g${groupId}:${group?.collapsed}:${group?.title}:${group?.color}:${tabIds}`);
-  }
-
-  // Hash ungrouped tabs
-  const ungroupedIds = ungroupedTabs.map(t => `${t.id}:${t.active}:${t.title}:${t.audible}`).join(',');
-  parts.push(`u:${ungroupedIds}`);
-
-  // Hash ghost tabs (excluding expiresAt since that changes every second)
-  const ghostIds = ghostTabs.map(t => {
-    const ghost = ghostGroups.get(t.id);
-    return `${t.id}:${ghost?.title}:${ghost?.color}`;
-  }).join(',');
-  parts.push(`gh:${ghostIds}`);
-
-  // Hash sleeping groups
-  const sleepingIds = [...sleepingGroups.values()].map(s =>
-    `${s.id}:${s.title}:${s.color}:${s.tabs.length}`
-  ).join(',');
-  parts.push(`sl:${sleepingIds}`);
-
-  return parts.join('|');
-}
-
 // Use getColorHex from shared.js
 function getGroupColor(group) {
   return getColorHex(group.color);
@@ -603,62 +627,161 @@ function createTabElement(tab, groupInfo, onClose) {
 
   // Drag start
   div.addEventListener('dragstart', (e) => {
-    draggedTab = { tabId: tab.id, groupId: tab.groupId };
-    draggedElement = div;
-    originalParent = div.parentNode;
-    originalNextSibling = div.nextSibling;
-
-    div.classList.add('dragging');
+    isDragging = true;
     e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('text/plain', tab.id.toString());
     e.stopPropagation();
+
+    if (selectedTabIds.has(tab.id) && selectedTabIds.size >= 2) {
+      // Multi-select drag: collect all selected elements in DOM order
+      const ordered = getOrderedTabIds().filter(id => selectedTabIds.has(id));
+      const elements = ordered.map(id => document.querySelector(`[data-tab-id="${id}"]`)).filter(Boolean);
+
+      // Primary = the element being dragged (move to front)
+      const primaryIdx = elements.indexOf(div);
+      if (primaryIdx > 0) {
+        elements.splice(primaryIdx, 1);
+        elements.unshift(div);
+      }
+
+      draggedTabs = elements.map(el => ({
+        tabId: parseInt(el.dataset.tabId),
+        groupId: parseInt(el.closest('.tab-group')?.dataset.groupId) || -1
+      }));
+      draggedElements = elements;
+      originalPositions = [{ parent: div.parentNode, nextSibling: div.nextSibling }];
+
+      div.classList.add('dragging');
+
+      // Create drag badge showing count
+      const badge = document.createElement('div');
+      badge.className = 'drag-badge';
+      badge.textContent = `${draggedElements.length}`;
+      document.body.appendChild(badge);
+      e.dataTransfer.setDragImage(badge, 0, 0);
+      requestAnimationFrame(() => badge.remove());
+    } else {
+      // Single-tab drag
+      draggedTabs = [{ tabId: tab.id, groupId: tab.groupId }];
+      draggedElements = [div];
+      originalPositions = [{ parent: div.parentNode, nextSibling: div.nextSibling }];
+      div.classList.add('dragging');
+    }
+
+    e.dataTransfer.setData('text/plain', tab.id.toString());
   });
 
   // Drag end - commit the move
   div.addEventListener('dragend', async () => {
     div.classList.remove('dragging');
+    isDragging = false; // Re-enable renders (DOM queries below are sync, safe before any await)
 
-    if (draggedTab && draggedElement) {
-      const currentParent = draggedElement.parentNode;
-      const movedToNewPosition = currentParent !== originalParent || draggedElement.nextSibling !== originalNextSibling;
+    if (draggedTabs.length > 0 && draggedElements.length > 0) {
+      const primaryElement = draggedElements[0];
+      const primaryTab = draggedTabs[0];
+      const primaryOriginal = originalPositions[0];
+      const currentParent = primaryElement.parentNode;
+      const movedToNewPosition = currentParent !== primaryOriginal.parent || primaryElement.nextSibling !== primaryOriginal.nextSibling;
 
       if (movedToNewPosition) {
         const targetGroupContainer = currentParent.closest('.tab-group');
         const targetGroupId = targetGroupContainer?.dataset.groupId;
 
-        const nextTab = draggedElement.nextElementSibling;
-        const prevTab = draggedElement.previousElementSibling;
+        const allTabIds = draggedTabs.map(t => t.tabId);
+
+        const nextTab = primaryElement.nextElementSibling;
+        const prevTab = primaryElement.previousElementSibling;
         const nextTabId = nextTab?.dataset?.tabId ? parseInt(nextTab.dataset.tabId) : null;
         const prevTabId = prevTab?.dataset?.tabId ? parseInt(prevTab.dataset.tabId) : null;
 
         try {
-          // Handle group change FIRST
-          if (targetGroupId === 'ungrouped') {
-            await chrome.tabs.ungroup(draggedTab.tabId);
-          } else if (targetGroupId && !targetGroupId.startsWith('ghost-')) {
-            const groupIdNum = parseInt(targetGroupId);
-            if (!isNaN(groupIdNum) && groupIdNum !== draggedTab.groupId) {
-              await chrome.tabs.group({ tabIds: draggedTab.tabId, groupId: groupIdNum });
-            }
+          // Sort selected tabs by current index to preserve relative order
+          const tabsWithIndex = await Promise.all(allTabIds.map(async id => ({
+            id,
+            index: (await chrome.tabs.get(id)).index
+          })));
+          tabsWithIndex.sort((a, b) => a.index - b.index);
+          const sortedIds = tabsWithIndex.map(t => t.id);
+          const allTabIdSet = new Set(allTabIds);
+
+          // Find the non-selected anchor tab at drop position
+          let anchorNext = primaryElement.nextElementSibling;
+          while (anchorNext && allTabIdSet.has(parseInt(anchorNext.dataset?.tabId))) {
+            anchorNext = anchorNext.nextElementSibling;
+          }
+          let anchorPrev = primaryElement.previousElementSibling;
+          while (anchorPrev && allTabIdSet.has(parseInt(anchorPrev.dataset?.tabId))) {
+            anchorPrev = anchorPrev.previousElementSibling;
           }
 
-          // Calculate final position
-          const currentTab = await chrome.tabs.get(draggedTab.tabId);
-          const nextTabIndex = nextTabId ? (await chrome.tabs.get(nextTabId)).index : null;
-          const prevTabIndex = prevTabId ? (await chrome.tabs.get(prevTabId)).index : null;
+          // Get anchor tab ID for position reference
+          const anchorNextId = anchorNext?.dataset?.tabId ? parseInt(anchorNext.dataset.tabId) : null;
+          const anchorPrevId = anchorPrev?.dataset?.tabId ? parseInt(anchorPrev.dataset.tabId) : null;
 
-          const targetIndex = calculateTargetIndex(currentTab.index, nextTabIndex, prevTabIndex);
-          if (targetIndex !== null) {
-            await chrome.tabs.move(draggedTab.tabId, { index: targetIndex });
+          // Move tabs one at a time, adjusting for index shifts
+          for (const tabId of sortedIds) {
+            const currentTab = await chrome.tabs.get(tabId);
+            let insertIndex;
+
+            if (anchorNextId) {
+              // Insert before anchor - account for shift if we're removing from before it
+              const anchorTab = await chrome.tabs.get(anchorNextId);
+              insertIndex = anchorTab.index;
+              if (currentTab.index < anchorTab.index) {
+                insertIndex -= 1;
+              }
+            } else if (anchorPrevId) {
+              // Insert after anchor
+              const anchorTab = await chrome.tabs.get(anchorPrevId);
+              insertIndex = anchorTab.index + 1;
+              if (currentTab.index < anchorTab.index) {
+                insertIndex -= 1;
+              }
+            } else {
+              insertIndex = 0;
+            }
+
+            await chrome.tabs.move(tabId, { index: insertIndex });
+          }
+
+          // 2. Then handle grouping
+          if (targetGroupId === 'ungrouped') {
+            await chrome.tabs.ungroup(sortedIds);
+          } else if (targetGroupId && targetGroupId.startsWith('ghost-')) {
+            const ghostTabId = parseInt(targetGroupId.replace('ghost-', ''));
+            const ghost = ghostGroups.get(ghostTabId);
+            if (ghost) {
+              const tabIds = [ghostTabId, ...sortedIds];
+              const newGroupId = await chrome.tabs.group({ tabIds });
+              await chrome.tabGroups.update(newGroupId, {
+                title: ghost.title,
+                color: ghost.color
+              });
+              await chrome.runtime.sendMessage({ type: 'markManualGroup', groupId: newGroupId });
+              ghostGroups.delete(ghostTabId);
+              saveGhostGroups();
+            }
+          } else if (targetGroupId) {
+            const groupIdNum = parseInt(targetGroupId);
+            if (!isNaN(groupIdNum)) {
+              const tabsToGroup = sortedIds.filter((id, i) => {
+                const origIdx = allTabIds.indexOf(id);
+                return origIdx === -1 || draggedTabs[origIdx].groupId !== groupIdNum;
+              });
+              if (tabsToGroup.length > 0) {
+                await chrome.tabs.group({ tabIds: tabsToGroup, groupId: groupIdNum });
+              }
+              await chrome.runtime.sendMessage({ type: 'markManualGroup', groupId: groupIdNum });
+            }
           }
 
           render('tab-drag-complete');
         } catch (err) {
-          console.error('Failed to move tab:', err);
-          // Revert on error - only if parent is still in document
-          if (originalParent && document.contains(originalParent)) {
+          console.error('Failed to move tab(s):', err);
+          // Revert primary to original position
+          const orig = primaryOriginal;
+          if (orig.parent && document.contains(orig.parent)) {
             try {
-              originalParent.insertBefore(draggedElement, originalNextSibling);
+              orig.parent.insertBefore(primaryElement, orig.nextSibling);
             } catch (e) {
               // DOM may have changed, ignore
             }
@@ -667,24 +790,24 @@ function createTabElement(tab, groupInfo, onClose) {
       }
     }
 
-    draggedTab = null;
-    draggedElement = null;
-    originalParent = null;
-    originalNextSibling = null;
+    draggedTabs = [];
+    draggedElements = [];
+    originalPositions = [];
   });
 
   // Drag over - move element to show preview
   div.addEventListener('dragover', (e) => {
     e.preventDefault();
-    if (draggedElement && draggedElement !== div) {
+    const primary = draggedElements[0];
+    if (primary && primary !== div) {
       const rect = div.getBoundingClientRect();
       const position = getDropPosition(e.clientY, rect.top, rect.height);
       const parent = div.parentNode;
 
       if (position === 'before') {
-        parent.insertBefore(draggedElement, div);
+        parent.insertBefore(primary, div);
       } else {
-        parent.insertBefore(draggedElement, div.nextSibling);
+        parent.insertBefore(primary, div.nextSibling);
       }
     }
   });
@@ -724,7 +847,8 @@ function createTabElement(tab, groupInfo, onClose) {
   }
   favicon.onerror = () => {
     favicon.className = 'favicon placeholder';
-    favicon.src = '';
+    favicon.dataset.failedSrc = favicon.getAttribute('src') || '';
+    favicon.removeAttribute('src');
   };
   faviconWrapper.appendChild(favicon);
 
@@ -746,8 +870,38 @@ function createTabElement(tab, groupInfo, onClose) {
   div.appendChild(faviconWrapper);
   div.appendChild(title);
 
-  div.addEventListener('click', () => {
-    chrome.tabs.update(tab.id, { active: true });
+  div.addEventListener('click', (e) => {
+    if (e.ctrlKey || e.metaKey) {
+      // Ctrl/Cmd+click: toggle individual tab selection
+      if (selectedTabIds.has(tab.id)) {
+        selectedTabIds.delete(tab.id);
+        div.classList.remove('selected');
+      } else {
+        selectedTabIds.add(tab.id);
+        div.classList.add('selected');
+      }
+      lastClickedTabId = tab.id;
+    } else if (e.shiftKey && lastClickedTabId !== null) {
+      // Shift+click: range selection
+      const ordered = getOrderedTabIds();
+      const fromIdx = ordered.indexOf(lastClickedTabId);
+      const toIdx = ordered.indexOf(tab.id);
+      if (fromIdx !== -1 && toIdx !== -1) {
+        const start = Math.min(fromIdx, toIdx);
+        const end = Math.max(fromIdx, toIdx);
+        const rangeIds = new Set(ordered.slice(start, end + 1));
+        selectedTabIds = rangeIds;
+        document.querySelectorAll('.tab-item.selected').forEach(el => el.classList.remove('selected'));
+        for (const id of rangeIds) {
+          document.querySelector(`[data-tab-id="${id}"]`)?.classList.add('selected');
+        }
+      }
+    } else {
+      // Plain click: clear selection, activate tab
+      clearSelection();
+      lastClickedTabId = tab.id;
+      chrome.tabs.update(tab.id, { active: true });
+    }
   });
 
   // Right-click context menu
@@ -762,6 +916,7 @@ function createTabElement(tab, groupInfo, onClose) {
 function setupGroupDragHandlers(container, groupId, tabs, groupInfo) {
   container.addEventListener('dragstart', (e) => {
     if (e.target.classList.contains('tab-item')) return;
+    isDragging = true;
 
     draggedGroup = {
       groupId,
@@ -779,6 +934,7 @@ function setupGroupDragHandlers(container, groupId, tabs, groupInfo) {
 
   container.addEventListener('dragend', async () => {
     container.classList.remove('dragging');
+    isDragging = false;
 
     if (draggedGroup && draggedGroupElement) {
       const movedToNewPosition = draggedGroupElement.nextSibling !== originalGroupNextSibling;
@@ -797,7 +953,7 @@ function setupGroupDragHandlers(container, groupId, tabs, groupInfo) {
 
   container.addEventListener('dragover', (e) => {
     e.preventDefault();
-    if (draggedGroupElement && draggedGroupElement !== container && !draggedTab) {
+    if (draggedGroupElement && draggedGroupElement !== container && draggedTabs.length === 0) {
       const rect = container.getBoundingClientRect();
       const position = getDropPosition(e.clientY, rect.top, rect.height);
 
@@ -805,6 +961,13 @@ function setupGroupDragHandlers(container, groupId, tabs, groupInfo) {
         tabListEl.insertBefore(draggedGroupElement, container);
       } else {
         tabListEl.insertBefore(draggedGroupElement, container.nextSibling);
+      }
+    } else if (draggedTabs.length > 0 && draggedElements[0]) {
+      // Tab dragged over group header/container — insert into this group's tab list
+      const primary = draggedElements[0];
+      const groupTabs = container.querySelector('.group-tabs');
+      if (groupTabs && !groupTabs.contains(primary)) {
+        groupTabs.appendChild(primary);
       }
     }
   });
@@ -912,6 +1075,77 @@ function createGroupHeader(groupInfo, isGhost, isUngrouped, ghostExpiresAt, tabs
     groupName.textContent = groupInfo ? (groupInfo.title || 'Unnamed Group') : 'Ungrouped';
   }
 
+  // Double-click group name to rename
+  groupName.addEventListener('dblclick', (e) => {
+    if (e.target.closest('.manual-badge')) return;
+    e.stopPropagation();
+
+    const currentTitle = isUngrouped ? otherGroupName : (groupInfo?.title || '');
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'group-rename-input';
+    input.value = currentTitle;
+
+    // Hide header chrome during rename
+    const headerEl = groupName.closest('.group-header');
+    headerEl.classList.add('renaming');
+
+    groupName.textContent = '';
+    groupName.appendChild(input);
+    input.focus();
+    input.select();
+
+    const commit = async () => {
+      const newTitle = input.value.trim() || currentTitle;
+      // Restore header chrome and text
+      headerEl.classList.remove('renaming');
+      input.remove();
+      groupName.textContent = newTitle;
+
+      try {
+        if (isUngrouped) {
+          otherGroupName = newTitle;
+          const stored = await chrome.storage.sync.get('settings');
+          const s = stored.settings || {};
+          s.otherGroupName = newTitle;
+          await chrome.storage.sync.set({ settings: s });
+        } else if (isSleeping) {
+          const entry = sleepingGroups.get(sleepId);
+          if (entry) { entry.title = newTitle; await saveSleepingGroups(); }
+          render('rename-sleeping-group');
+        } else if (isGhost) {
+          const ghostTabId = parseInt(String(groupId).replace('ghost-', ''));
+          const ghost = ghostGroups.get(ghostTabId);
+          if (ghost) { ghost.title = newTitle; saveGhostGroups(); }
+          render('rename-ghost-group');
+        } else if (typeof groupId === 'number') {
+          await chrome.tabGroups.update(groupId, { title: newTitle });
+          await chrome.runtime.sendMessage({ type: 'markManualGroup', groupId });
+          // Sync custom group name if this was a custom group
+          if (currentTitle !== newTitle) {
+            const stored = await chrome.storage.sync.get('settings');
+            const s = stored.settings || {};
+            const customGroup = (s.customGroups || []).find(g => g.name === currentTitle);
+            if (customGroup) {
+              customGroup.name = newTitle;
+              await chrome.storage.sync.set({ settings: s });
+              chrome.runtime.sendMessage({ type: 'settingsUpdated', settings: s });
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Failed to rename group:', err);
+      }
+    };
+
+    input.addEventListener('keydown', (ke) => {
+      if (ke.key === 'Enter') { ke.preventDefault(); input.blur(); }
+      if (ke.key === 'Escape') { ke.preventDefault(); input.value = currentTitle; input.blur(); }
+    });
+    input.addEventListener('blur', commit, { once: true });
+    input.addEventListener('click', (ce) => ce.stopPropagation());
+  });
+
   const rightSection = createHeaderRightSection(isGhost, ghostExpiresAt, isUngrouped, tabs, groupId, groupInfo, isSleeping, sleepId);
 
   header.appendChild(collapseIcon);
@@ -962,20 +1196,21 @@ function createHeaderRightSection(isGhost, ghostExpiresAt, isUngrouped, tabs, gr
   if (!isUngrouped && !isGhost) {
     const sleepBtn = document.createElement('button');
     sleepBtn.className = 'sleep-btn';
-    sleepBtn.textContent = 'Zzz';
 
     if (isSleeping) {
+      sleepBtn.textContent = '⏰';
       sleepBtn.title = 'Wake group (restore tabs)';
       sleepBtn.addEventListener('click', async (e) => {
         e.stopPropagation();
         await wakeGroup(sleepId);
       });
     } else {
+      sleepBtn.textContent = 'Zzz';
       sleepBtn.title = 'Sleep group (close tabs, save for later)';
       sleepBtn.addEventListener('click', async (e) => {
         e.stopPropagation();
         if (canSleepGroup(groupId)) {
-          await sleepGroup(groupId, groupInfo, tabs);
+          await sleepGroup(groupId, groupInfo);
         }
       });
     }
@@ -988,9 +1223,16 @@ function createHeaderRightSection(isGhost, ghostExpiresAt, isUngrouped, tabs, gr
     closeGroupBtn.className = 'close-group-btn';
     closeGroupBtn.innerHTML = '&times;';
     closeGroupBtn.title = isUngrouped ? 'Close all ungrouped tabs' : 'Close all tabs in group';
-    closeGroupBtn.addEventListener('click', (e) => {
+    closeGroupBtn.addEventListener('click', async (e) => {
       e.stopPropagation();
-      const tabIds = tabs.map(t => t.id);
+      // Query fresh tabs to include any recently dragged-in tabs
+      let freshTabs;
+      if (isUngrouped) {
+        freshTabs = (await chrome.tabs.query({ currentWindow: true })).filter(t => t.groupId === -1);
+      } else {
+        freshTabs = await chrome.tabs.query({ groupId });
+      }
+      const tabIds = freshTabs.map(t => t.id);
       removeGroupElement(isUngrouped ? 'ungrouped' : groupId);
       tabIds.forEach(id => ghostGroups.delete(id));
       saveGhostGroups();
@@ -1015,23 +1257,24 @@ function createTabsContainer(tabs, groupInfo, isGhost, isUngrouped, positionInde
 
   tabsContainer.addEventListener('dragover', (e) => {
     e.preventDefault();
-    if (draggedElement && draggedTab) {
-      if (draggedElement.parentNode !== tabsContainer) {
-        const children = Array.from(tabsContainer.children).filter(c => c !== draggedElement);
+    const primary = draggedElements[0];
+    if (primary && draggedTabs.length > 0) {
+      if (primary.parentNode !== tabsContainer) {
+        const children = Array.from(tabsContainer.children).filter(c => c !== primary);
         if (children.length === 0) {
-          tabsContainer.appendChild(draggedElement);
+          tabsContainer.appendChild(primary);
         } else {
           let inserted = false;
           for (const child of children) {
             const rect = child.getBoundingClientRect();
             if (getDropPosition(e.clientY, rect.top, rect.height) === 'before') {
-              tabsContainer.insertBefore(draggedElement, child);
+              tabsContainer.insertBefore(primary, child);
               inserted = true;
               break;
             }
           }
           if (!inserted) {
-            tabsContainer.appendChild(draggedElement);
+            tabsContainer.appendChild(primary);
           }
         }
       }
@@ -1063,10 +1306,10 @@ function createTabsContainer(tabs, groupInfo, isGhost, isUngrouped, positionInde
   return tabsContainer;
 }
 
-// Create a non-interactive preview of sleeping tabs
+// Create a non-interactive preview of sleeping tabs (collapsed by default)
 function createSleepingTabsPreview(tabs) {
   const tabsContainer = document.createElement('div');
-  tabsContainer.className = 'group-tabs sleeping-tabs';
+  tabsContainer.className = 'group-tabs sleeping-tabs collapsed';
 
   tabs.forEach(tabData => {
     const div = document.createElement('div');
@@ -1149,8 +1392,15 @@ function createGroupElement(groupId, groupInfo, tabs, isUngrouped = false, isGho
     tabsContainer = createTabsContainer(tabs, groupInfo, isGhost, isUngrouped, positionIndex);
   }
 
-  // Sleeping groups don't need collapse handler (always expanded preview)
-  if (!isSleeping) {
+  // Collapse handler for all group types
+  if (isSleeping) {
+    // Simple toggle for sleeping groups (no Chrome API call)
+    header.addEventListener('click', (e) => {
+      if (e.target.closest('.sleep-btn')) return;
+      header.classList.toggle('collapsed');
+      tabsContainer.classList.toggle('collapsed');
+    });
+  } else {
     setupCollapseHandler(header, tabsContainer, groupInfo, isUngrouped);
   }
 
@@ -1160,7 +1410,179 @@ function createGroupElement(groupId, groupInfo, tabs, isUngrouped = false, isGho
   return container;
 }
 
+// Get a unique key for a render item to match against existing DOM groups
+function getGroupKey(item) {
+  if (item.type === 'real') return String(item.groupId);
+  if (item.type === 'ungrouped') return 'ungrouped';
+  if (item.type === 'ghost') return `ghost-${item.tab.id}`;
+  if (item.type === 'sleeping') return String(item.sleepId);
+  return 'unknown';
+}
+
+// Patch an existing .tab-item element with new tab data
+function updateTabElement(el, tab) {
+  // Active class
+  el.classList.toggle('active', !!tab.active);
+
+  // Title
+  const titleEl = el.querySelector('.tab-title');
+  if (titleEl) {
+    const newTitle = tab.title || tab.url || 'New Tab';
+    if (titleEl.textContent !== newTitle) {
+      titleEl.textContent = newTitle;
+      titleEl.title = newTitle;
+    }
+  }
+
+  // Favicon — use getAttribute to avoid resolved-URL mismatch
+  const favicon = el.querySelector('.favicon');
+  if (favicon) {
+    const newSrc = (tab.favIconUrl && !tab.favIconUrl.startsWith('chrome://')) ? tab.favIconUrl : '';
+    const currentSrc = favicon.getAttribute('src') || '';
+    const failedSrc = favicon.dataset.failedSrc || '';
+    if (currentSrc !== newSrc && failedSrc !== newSrc) {
+      delete favicon.dataset.failedSrc;
+      if (newSrc) {
+        favicon.className = 'favicon';
+        favicon.src = newSrc;
+      } else {
+        favicon.className = 'favicon placeholder';
+        favicon.removeAttribute('src');
+      }
+    }
+  }
+
+  // Audio indicator
+  const faviconWrapper = el.querySelector('.favicon-wrapper');
+  const existingAudio = el.querySelector('.audio-indicator');
+  if (tab.audible && !existingAudio && faviconWrapper) {
+    const audioIcon = document.createElement('span');
+    audioIcon.className = 'audio-indicator';
+    audioIcon.textContent = '🔊';
+    audioIcon.title = 'Playing audio';
+    faviconWrapper.appendChild(audioIcon);
+  } else if (!tab.audible && existingAudio) {
+    existingAudio.remove();
+  }
+}
+
+// Patch a group header in-place
+function updateGroupHeader(headerEl, groupInfo, tabs, isGhost, ghostExpiresAt, isUngrouped, isSleeping, groupType) {
+  const isCollapsed = groupInfo?.collapsed || false;
+  headerEl.classList.toggle('collapsed', isCollapsed);
+
+  // Border color
+  const color = groupInfo ? getColorHex(groupInfo.color) : '#888';
+  if (headerEl.style.borderLeftColor !== color) {
+    headerEl.style.borderLeftColor = color;
+  }
+
+  // Group name — skip update if rename input is active
+  const nameEl = headerEl.querySelector('.group-name');
+  if (nameEl && !nameEl.querySelector('.group-rename-input')) {
+    const newName = groupInfo ? (groupInfo.title || 'Unnamed Group') : 'Ungrouped';
+    // Get text without badge
+    const badge = nameEl.querySelector('.manual-badge');
+    const currentText = badge ? nameEl.firstChild?.textContent : nameEl.textContent;
+    if (currentText !== newName) {
+      if (badge) {
+        nameEl.firstChild.textContent = newName;
+      } else {
+        nameEl.textContent = newName;
+      }
+    }
+
+    // Manual badge: should exist if groupType !== 'auto' and not ungrouped/ghost/sleeping
+    const shouldHaveBadge = groupType !== 'auto' && !isUngrouped && !isGhost && !isSleeping;
+    if (shouldHaveBadge && !badge) {
+      // Need to re-add badge — but this is rare, just let full re-render handle it
+      // Actually, add it:
+      const newBadge = document.createElement('span');
+      newBadge.className = 'manual-badge';
+      newBadge.textContent = 'M';
+      newBadge.title = 'Manual group — click to release to auto-management';
+      nameEl.appendChild(newBadge);
+    } else if (!shouldHaveBadge && badge) {
+      badge.remove();
+    }
+  }
+
+  // Tab count
+  const countEl = headerEl.querySelector('.tab-count');
+  if (countEl) {
+    const newCount = `(${tabs.length})`;
+    if (countEl.textContent !== newCount) {
+      countEl.textContent = newCount;
+    }
+  }
+
+  // Ghost countdown
+  if (isGhost && ghostExpiresAt) {
+    const countdownEl = headerEl.querySelector('.countdown');
+    if (countdownEl) {
+      const remaining = getGhostRemainingSeconds({ expiresAt: ghostExpiresAt });
+      countdownEl.textContent = `${remaining}s`;
+    }
+  }
+}
+
+// Diff tabs within a group's tabs container
+function diffGroupTabs(tabsContainer, newTabs, groupInfo, isGhost, isUngrouped, positionIndex) {
+  // Build map of existing tab elements
+  const existingMap = new Map();
+  for (const el of tabsContainer.querySelectorAll(':scope > .tab-item')) {
+    const tabId = el.dataset.tabId;
+    if (tabId) existingMap.set(tabId, el);
+  }
+
+  const newTabIds = new Set(newTabs.map(t => String(t.id)));
+
+  // Remove tabs no longer present
+  for (const [tabId, el] of existingMap) {
+    if (!newTabIds.has(tabId)) {
+      el.remove();
+      existingMap.delete(tabId);
+    }
+  }
+
+  // Update or insert tabs in order
+  let prevEl = null;
+  for (let i = 0; i < newTabs.length; i++) {
+    const tab = newTabs[i];
+    const tabIdStr = String(tab.id);
+    let el = existingMap.get(tabIdStr);
+
+    if (el) {
+      updateTabElement(el, tab);
+    } else {
+      // Build onClose for 2-tab groups
+      let onClose = null;
+      if (!isUngrouped && !isGhost && newTabs.length === 2 && groupInfo) {
+        const otherTab = newTabs.find(t => t.id !== tab.id);
+        if (otherTab) {
+          onClose = () => {
+            ghostGroups.set(otherTab.id, createGhostEntry(groupInfo, positionIndex));
+            saveGhostGroups();
+          };
+        }
+      }
+      el = createTabElement(tab, isGhost ? groupInfo : null, onClose);
+    }
+
+    // Ensure correct position (also handles newly created elements not yet in DOM)
+    if (!el.parentNode || el.previousElementSibling !== prevEl) {
+      if (prevEl) {
+        prevEl.after(el);
+      } else {
+        tabsContainer.prepend(el);
+      }
+    }
+    prevEl = el;
+  }
+}
+
 async function render(source = 'unknown', forceRender = false) {
+  if (isDragging) return; // Don't rebuild DOM while user is dragging
   renderCount++;
   const scrollTop = document.documentElement.scrollTop || document.body.scrollTop;
 
@@ -1172,15 +1594,6 @@ async function render(source = 'unknown', forceRender = false) {
     totalTabs += tabs.length;
   }
   tabCountEl.textContent = `(${totalTabs})`;
-
-  // Skip render if state hasn't changed (unless forced)
-  const stateHash = computeStateHash(groupedTabs, ungroupedTabs, ghostTabs, groupMap);
-  if (!forceRender && stateHash === lastStateHash) {
-    return;
-  }
-  lastStateHash = stateHash;
-
-  tabListEl.innerHTML = '';
 
   // Fetch group types for all real groups
   const groupTypes = new Map();
@@ -1246,64 +1659,108 @@ async function render(source = 'unknown', forceRender = false) {
   // Sort by first tab index to match tab bar order
   renderItems.sort((a, b) => a.firstTabIndex - b.firstTabIndex);
 
-  // Render in sorted order
+  // --- DOM diffing: patch existing groups in-place ---
+
+  // Build map of existing group elements by data-group-id
+  const existingGroups = new Map();
+  for (const el of tabListEl.querySelectorAll(':scope > .tab-group')) {
+    existingGroups.set(el.dataset.groupId, el);
+  }
+
+  const newGroupKeys = new Set();
+  let prevGroupEl = null;
+
   renderItems.forEach((item, index) => {
-    if (item.type === 'real') {
-      tabListEl.appendChild(createGroupElement(
-        item.groupId,
-        item.groupInfo,
-        item.tabs,
-        false,
-        false,
-        null,
-        index,
-        false,
-        null,
-        item.groupType
-      ));
-    } else if (item.type === 'ungrouped') {
-      tabListEl.appendChild(createGroupElement(
-        'ungrouped',
-        { title: otherGroupName, color: 'grey', collapsed: otherCollapsed },
-        item.tabs,
-        true,
-        false,
-        null,
-        index
-      ));
-    } else if (item.type === 'ghost') {
-      const ghostId = `ghost-${item.tab.id}`;
-      const fakeGroupInfo = { title: item.ghost.title, color: item.ghost.color };
-      tabListEl.appendChild(createGroupElement(
-        ghostId,
-        fakeGroupInfo,
-        [item.tab],
-        false,
-        true,
-        item.ghost.expiresAt,
-        index
-      ));
-    } else if (item.type === 'sleeping') {
-      const groupInfo = { title: item.entry.title, color: item.entry.color };
-      tabListEl.appendChild(createGroupElement(
-        item.sleepId,
-        groupInfo,
-        item.entry.tabs,
-        false,
-        false,
-        null,
-        index,
-        true,
-        item.sleepId
-      ));
+    const key = getGroupKey(item);
+    newGroupKeys.add(key);
+
+    let groupEl = existingGroups.get(key);
+
+    if (groupEl) {
+      // Patch existing group in-place
+      const headerEl = groupEl.querySelector(':scope > .group-header');
+      const tabsContainer = groupEl.querySelector(':scope > .group-tabs');
+
+      if (item.type === 'real') {
+        updateGroupHeader(headerEl, item.groupInfo, item.tabs, false, null, false, false, item.groupType);
+        if (tabsContainer) {
+          tabsContainer.classList.toggle('collapsed', !!item.groupInfo?.collapsed);
+          diffGroupTabs(tabsContainer, item.tabs, item.groupInfo, false, false, index);
+        }
+      } else if (item.type === 'ungrouped') {
+        const ungroupedInfo = { title: otherGroupName, color: 'grey', collapsed: otherCollapsed };
+        updateGroupHeader(headerEl, ungroupedInfo, item.tabs, false, null, true, false, 'none');
+        if (tabsContainer) {
+          tabsContainer.classList.toggle('collapsed', otherCollapsed);
+          diffGroupTabs(tabsContainer, item.tabs, null, false, true, index);
+        }
+      } else if (item.type === 'ghost') {
+        const fakeGroupInfo = { title: item.ghost.title, color: item.ghost.color };
+        updateGroupHeader(headerEl, fakeGroupInfo, [item.tab], true, item.ghost.expiresAt, false, false, 'none');
+        if (tabsContainer) {
+          diffGroupTabs(tabsContainer, [item.tab], fakeGroupInfo, true, false, index);
+        }
+      } else if (item.type === 'sleeping') {
+        const sleepInfo = { title: item.entry.title, color: item.entry.color };
+        updateGroupHeader(headerEl, sleepInfo, item.entry.tabs, false, null, false, true, 'none');
+        // Sleeping tabs are static previews — rebuild if tab count changed
+        if (tabsContainer) {
+          const currentCount = tabsContainer.querySelectorAll('.tab-item').length;
+          if (currentCount !== item.entry.tabs.length) {
+            const newContainer = createSleepingTabsPreview(item.entry.tabs);
+            tabsContainer.replaceWith(newContainer);
+          }
+        }
+      }
+    } else {
+      // Create new group element
+      if (item.type === 'real') {
+        groupEl = createGroupElement(item.groupId, item.groupInfo, item.tabs, false, false, null, index, false, null, item.groupType);
+      } else if (item.type === 'ungrouped') {
+        groupEl = createGroupElement('ungrouped', { title: otherGroupName, color: 'grey', collapsed: otherCollapsed }, item.tabs, true, false, null, index);
+      } else if (item.type === 'ghost') {
+        const ghostId = `ghost-${item.tab.id}`;
+        const fakeGroupInfo = { title: item.ghost.title, color: item.ghost.color };
+        groupEl = createGroupElement(ghostId, fakeGroupInfo, [item.tab], false, true, item.ghost.expiresAt, index);
+      } else if (item.type === 'sleeping') {
+        const sleepInfo = { title: item.entry.title, color: item.entry.color, collapsed: true };
+        groupEl = createGroupElement(item.sleepId, sleepInfo, item.entry.tabs, false, false, null, index, true, item.sleepId);
+      }
+    }
+
+    // Ensure correct position in tabListEl
+    if (groupEl) {
+      const expectedPrev = prevGroupEl;
+      const actualPrev = groupEl.previousElementSibling;
+      if (groupEl.parentNode !== tabListEl || actualPrev !== expectedPrev) {
+        if (expectedPrev) {
+          expectedPrev.after(groupEl);
+        } else {
+          tabListEl.prepend(groupEl);
+        }
+      }
+      prevGroupEl = groupEl;
     }
   });
+
+  // Remove groups no longer in renderItems
+  for (const [key, el] of existingGroups) {
+    if (!newGroupKeys.has(key)) {
+      el.remove();
+    }
+  }
+
+  // Re-apply selection to tabs still in DOM
+  if (selectedTabIds.size > 0) {
+    for (const id of selectedTabIds) {
+      document.querySelector(`[data-tab-id="${id}"]`)?.classList.add('selected');
+    }
+  }
 
   // Scroll to focused tab if pending (takes priority over scroll position restore)
   if (pendingScrollToTabId !== null) {
     const tabIdToScroll = pendingScrollToTabId;
     pendingScrollToTabId = null;
-    // Use requestAnimationFrame to ensure DOM is rendered
     requestAnimationFrame(() => scrollToTab(tabIdToScroll));
   } else {
     window.scrollTo(0, scrollTop);
@@ -1324,8 +1781,8 @@ async function render(source = 'unknown', forceRender = false) {
   render('initial', true);
 })();
 
-// Listen for settings changes and re-render
-chrome.storage.onChanged.addListener((changes, area) => {
+// Listen for settings and sleeping groups changes
+chrome.storage.onChanged.addListener(async (changes, area) => {
   if (area === 'sync' && changes.settings) {
     const newSettings = changes.settings.newValue;
     let needsRender = false;
@@ -1340,6 +1797,11 @@ chrome.storage.onChanged.addListener((changes, area) => {
     if (needsRender) {
       render('settings-changed', true);
     }
+  }
+  // Sync sleeping groups across windows
+  if (area === 'local' && changes.sleepingGroups) {
+    await loadSleepingGroups();
+    render('sleeping-groups-changed', true);
   }
 });
 

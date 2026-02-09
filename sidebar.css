@@ -13,6 +13,7 @@
   --close-btn-color: #666;
   --close-btn-hover: #cc0000;
   --active-tab-bg: #e0e7ff;
+  --selected-tab-bg: #d0d8f0;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -25,6 +26,7 @@
     --close-btn-color: #999;
     --close-btn-hover: #ff4444;
     --active-tab-bg: #2d3a5a;
+    --selected-tab-bg: #364470;
   }
 }
 
@@ -130,6 +132,23 @@ body {
   flex: 1;
 }
 
+.group-rename-input {
+  background: var(--bg-color);
+  color: var(--text-color);
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  font: inherit;
+  width: 100%;
+  padding: 1px 4px;
+  outline: none;
+}
+
+.group-header.renaming .collapse-icon,
+.group-header.renaming .header-right,
+.group-header.renaming .manual-badge {
+  display: none;
+}
+
 .group-header .header-right {
   display: flex;
   align-items: center;
@@ -210,6 +229,10 @@ body {
 
 .tab-item.active {
   background-color: var(--active-tab-bg);
+}
+
+.tab-item.selected {
+  background-color: var(--selected-tab-bg);
 }
 
 .tab-item .close-btn {
@@ -566,4 +589,23 @@ body {
 .manual-badge:hover {
   background-color: rgba(128, 128, 128, 0.2);
   color: var(--text-color);
+}
+
+/* Drag badge for multi-select count */
+.drag-badge {
+  position: fixed;
+  top: -100px;
+  left: -100px;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  background-color: var(--primary-color);
+  color: white;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 11px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
 }

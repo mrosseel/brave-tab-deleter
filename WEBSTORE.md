@@ -1,11 +1,5 @@
 # Chrome Web Store Listing
 
-## Short Description (132 chars max)
-
-Manage browser tabs from a sidebar with auto-grouping by domain, custom groups, drag-and-drop, and instant collapse/expand controls.
-
-## Detailed Description
-
 Tab Deleter - A powerful sidebar for managing your browser tabs
 
 FEATURES:

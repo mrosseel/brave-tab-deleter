@@ -14,8 +14,9 @@ import {
   removeGroupId
 } from './lib/group-tracking.js';
 import { DEFAULT_SETTINGS } from './lib/settings-defaults.js';
+import { bus, emitSettingsChanges } from './lib/events.js';
 
-console.log('=== BACKGROUND.JS VERSION 6 LOADED ===');
+console.log('=== BACKGROUND.JS VERSION 7 LOADED ===');
 
 // Track sidebar state per window
 const sidebarOpen = new Map();
@@ -40,7 +41,7 @@ async function checkAndUpdateGroupStatus(groupId) {
 
     const firstDomain = getDomain(tabs[0].url);
     const allSameDomain = tabs.every(t => getDomain(t.url) === firstDomain);
-    const titleMatches = group.title === getShortName(firstDomain);
+    const titleMatches = group.title?.toLowerCase() === getShortName(firstDomain).toLowerCase();
 
     if (allSameDomain && titleMatches) {
       if (!isAutoGroupId(groupId)) {
@@ -72,8 +73,10 @@ async function loadSettings() {
 // Listen for messages
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'settingsUpdated') {
-    settings = message.settings;
-    updateBadge(); // Update badge when settings change (e.g., allWindows toggled)
+    const oldSettings = { ...settings };
+    settings = { ...settings, ...message.settings };
+    const windowId = sender.tab?.windowId;
+    emitSettingsChanges(oldSettings, settings, { windowId });
   } else if (message.type === 'sidebarOpened') {
     withGroupingLock(() => applyAutoGroupingToAll());
   } else if (message.type === 'refreshAll') {
@@ -106,9 +109,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 // Listen for storage changes (backup method)
-chrome.storage.onChanged.addListener((changes, areaName) => {
+chrome.storage.onChanged.addListener(async (changes, areaName) => {
   if (areaName === 'sync' && changes.settings) {
+    const oldSettings = { ...settings };
     settings = { ...settings, ...changes.settings.newValue };
+    await emitSettingsChanges(oldSettings, settings);
   }
 });
 
@@ -130,31 +135,62 @@ chrome.action.onClicked.addListener(async (tab) => {
 });
 
 // Update badge with tab count
-async function updateBadge() {
-  const queryOptions = settings.allWindows ? {} : { currentWindow: true };
-  const tabs = await chrome.tabs.query(queryOptions);
-  chrome.action.setBadgeText({ text: tabs.length.toString() });
+// If windowId provided, only update that window's badge
+async function updateBadge(windowId) {
   chrome.action.setBadgeBackgroundColor({ color: '#6366f1' });
+
+  if (settings.allWindows) {
+    // Show total count across all windows
+    const allTabs = await chrome.tabs.query({});
+    const count = allTabs.length.toString();
+
+    if (windowId) {
+      // Only update tabs in specified window
+      const windowTabs = allTabs.filter(t => t.windowId === windowId);
+      for (const tab of windowTabs) {
+        chrome.action.setBadgeText({ text: count, tabId: tab.id });
+      }
+    } else {
+      // Update all tabs
+      chrome.action.setBadgeText({ text: count });
+      for (const tab of allTabs) {
+        chrome.action.setBadgeText({ text: count, tabId: tab.id });
+      }
+    }
+  } else {
+    if (windowId) {
+      // Only update specified window
+      const tabs = await chrome.tabs.query({ windowId });
+      const [activeTab] = await chrome.tabs.query({ windowId, active: true });
+      if (activeTab) {
+        chrome.action.setBadgeText({ text: tabs.length.toString(), tabId: activeTab.id });
+      }
+    } else {
+      // Update all windows
+      const windows = await chrome.windows.getAll({ windowTypes: ['normal'] });
+      for (const win of windows) {
+        const tabs = await chrome.tabs.query({ windowId: win.id });
+        const [activeTab] = await chrome.tabs.query({ windowId: win.id, active: true });
+        if (activeTab) {
+          chrome.action.setBadgeText({ text: tabs.length.toString(), tabId: activeTab.id });
+        }
+      }
+    }
+  }
 }
 
 // Find matching custom group for a hostname
 function findCustomGroupForHostname(hostname) {
-  console.log('[bg] findCustomGroupForHostname:', hostname, 'customGrouping:', settings.customGrouping, 'groups:', settings.customGroups);
   if (!settings.customGrouping || !settings.customGroups) return null;
 
   for (const group of settings.customGroups) {
     for (const pattern of group.domains) {
       // Match exact hostname or hostname ending with .pattern
-      const exactMatch = hostname === pattern;
-      const suffixMatch = hostname.endsWith('.' + pattern);
-      console.log('[bg] Checking pattern:', pattern, 'against:', hostname, 'exact:', exactMatch, 'suffix:', suffixMatch);
-      if (exactMatch || suffixMatch) {
-        console.log('[bg] MATCH! Returning group:', group.name);
+      if (hostname === pattern || hostname.endsWith('.' + pattern)) {
         return group;
       }
     }
   }
-  console.log('[bg] No match found');
   return null;
 }
 
@@ -204,6 +240,7 @@ async function ensureColorForCustomGroup(windowId, customGroupTitle, desiredColo
 
 // Core grouping logic - groups a single tab appropriately
 async function groupSingleTab(tab) {
+  await initPromise;
   if (shouldSkipUrl(tab.url)) return;
 
   const domain = getDomain(tab.url);
@@ -217,12 +254,9 @@ async function groupSingleTab(tab) {
     return; // Tab no longer exists
   }
 
-  // Skip tabs in manual groups
-  if (currentTab.groupId !== -1 && isManualGroupId(currentTab.groupId)) return;
-
   const hostname = getHostname(tab.url);
 
-  // 1. Check custom groups first (highest priority)
+  // 1. Check custom groups first (highest priority - even overrides manual groups)
   if (settings.customGrouping && hostname) {
     const customGroup = findCustomGroupForHostname(hostname);
     if (customGroup) {
@@ -240,6 +274,9 @@ async function groupSingleTab(tab) {
       return;
     }
   }
+
+  // Skip tabs in manual groups (but only after custom group check above)
+  if (currentTab.groupId !== -1 && isManualGroupId(currentTab.groupId)) return;
 
   // 2. Check auto groups (if enabled)
   if (settings.autoGrouping) {
@@ -294,9 +331,14 @@ async function groupSingleTab(tab) {
         unmarkAutoGroup(groupId);
         return; // Don't ungroup, keep tab in place
       }
+
+      // Tab matches the group's domain - keep it in place
+      if (otherDomains.has(domain)) {
+        return;
+      }
     }
 
-    // Other tabs are pure (or no other tabs) - ungroup this mismatched tab
+    // Tab doesn't match the group - ungroup it
     await chrome.tabs.ungroup(currentTab.id);
 
     // Re-evaluate the group status (might become valid auto again)
@@ -308,6 +350,7 @@ async function groupSingleTab(tab) {
 
 // Apply auto-grouping to all ungrouped tabs
 async function applyAutoGroupingToAll() {
+  await initPromise;
   if (!settings.autoGrouping && !settings.customGrouping) return;
 
   if (settings.allWindows) {
@@ -373,7 +416,7 @@ async function applyAutoGroupingToWindow(windowId) {
       domainCounts.set(domain, (domainCounts.get(domain) || 0) + 1);
     }
     for (const [domain, count] of domainCounts) {
-      const existingGroup = groups.find(g => g.title === getShortName(domain));
+      const existingGroup = groups.find(g => g.title?.toLowerCase() === getShortName(domain).toLowerCase());
       if (existingGroup || count >= 2) {
         hasWork = true;
         break;
@@ -501,38 +544,8 @@ async function checkAutoOrdering(tabId) {
   }
 }
 
-// Badge updates
-chrome.tabs.onCreated.addListener(updateBadge);
-chrome.tabs.onRemoved.addListener(updateBadge);
+// Window focus change still handled directly (not via bus)
 chrome.windows.onFocusChanged.addListener(updateBadge);
-
-// Track tab activation for auto-ordering
-chrome.tabs.onActivated.addListener(async (activeInfo) => {
-  const tabs = await chrome.tabs.query({ windowId: activeInfo.windowId });
-  for (const tab of tabs) {
-    if (tab.id !== activeInfo.tabId) {
-      checkAutoOrdering(tab.id);
-    }
-  }
-  tabActivationTimes.set(activeInfo.tabId, Date.now());
-});
-
-// Group new tabs when they finish loading
-chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
-  if (changeInfo.status !== 'complete') return;
-  if (shouldSkipUrl(tab.url)) return;
-  withGroupingLock(() => groupSingleTab(tab));
-});
-
-// Clean up when tabs are closed
-chrome.tabs.onRemoved.addListener((tabId) => {
-  tabActivationTimes.delete(tabId);
-});
-
-// Clean up auto and manual group IDs when groups are removed
-chrome.tabGroups.onRemoved.addListener((group) => {
-  removeGroupId(group.id);
-});
 
 // Periodic check for auto-ordering
 setInterval(() => {
@@ -552,4 +565,54 @@ async function init() {
   // Don't auto-group on init - only when sidebar opens
 }
 
-init();
+const initPromise = init();
+
+// --- Settings Event Handlers ---
+bus.on('settings:allWindows', (newVal, oldVal, ctx) => updateBadge(ctx?.windowId));
+
+bus.on('settings:autoGrouping', async (newValue) => {
+  if (newValue) await withGroupingLock(() => applyAutoGroupingToAll());
+});
+
+bus.on('settings:customGrouping', async (newValue) => {
+  if (newValue) await withGroupingLock(() => applyAutoGroupingToAll());
+});
+
+bus.on('settings:customGroups', async () => {
+  if (settings.customGrouping) {
+    await withGroupingLock(() => applyAutoGroupingToAll());
+  }
+});
+
+// --- Tab Event Handlers ---
+bus.on('tab:created', (tab) => updateBadge(settings.allWindows ? undefined : tab.windowId));
+bus.on('tab:removed', (tabId, removeInfo) => updateBadge(settings.allWindows ? undefined : removeInfo.windowId));
+bus.on('tab:removed', (tabId) => tabActivationTimes.delete(tabId));
+
+bus.on('tab:activated', async (activeInfo) => {
+  if (!settings.allWindows) {
+    const tabs = await chrome.tabs.query({ windowId: activeInfo.windowId });
+    chrome.action.setBadgeText({ text: tabs.length.toString(), tabId: activeInfo.tabId });
+  }
+  const tabs = await chrome.tabs.query({ windowId: activeInfo.windowId });
+  for (const tab of tabs) {
+    if (tab.id !== activeInfo.tabId) checkAutoOrdering(tab.id);
+  }
+  tabActivationTimes.set(activeInfo.tabId, Date.now());
+});
+
+bus.on('tab:updated', async (tabId, changeInfo, tab) => {
+  if (changeInfo.status !== 'complete') return;
+  if (shouldSkipUrl(tab.url)) return;
+  withGroupingLock(() => groupSingleTab(tab));
+});
+
+// --- Group Event Handlers ---
+bus.on('group:removed', (group) => removeGroupId(group.id));
+
+// --- Wire Chrome events to bus ---
+chrome.tabs.onCreated.addListener((tab) => bus.emit('tab:created', tab));
+chrome.tabs.onRemoved.addListener((tabId, removeInfo) => bus.emit('tab:removed', tabId, removeInfo));
+chrome.tabs.onActivated.addListener((info) => bus.emit('tab:activated', info));
+chrome.tabs.onUpdated.addListener((id, info, tab) => bus.emit('tab:updated', id, info, tab));
+chrome.tabGroups.onRemoved.addListener((group) => bus.emit('group:removed', group));

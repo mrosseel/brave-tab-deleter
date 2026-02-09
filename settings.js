@@ -124,7 +124,7 @@ function updateColorSelection() {
   });
 }
 
-function saveGroup() {
+async function saveGroup() {
   const name = groupNameInput.value.trim();
   const domainsText = groupDomainsInput.value.trim();
 
@@ -147,12 +147,26 @@ function saveGroup() {
     // Update existing group
     const index = settings.customGroups.findIndex(g => g.id === editingGroupId);
     if (index !== -1) {
+      const oldName = settings.customGroups[index].name;
+      const oldColor = settings.customGroups[index].color;
       settings.customGroups[index] = {
         ...settings.customGroups[index],
         name,
         color: selectedColor,
         domains
       };
+      // Rename matching Chrome group if name or color changed
+      if (oldName !== name || oldColor !== selectedColor) {
+        try {
+          const groups = await chrome.tabGroups.query({});
+          const match = groups.find(g => g.title === oldName && g.color === oldColor);
+          if (match) {
+            await chrome.tabGroups.update(match.id, { title: name, color: selectedColor });
+          }
+        } catch (err) {
+          console.error('Failed to rename Chrome group:', err);
+        }
+      }
     }
   } else {
     // Add new group
