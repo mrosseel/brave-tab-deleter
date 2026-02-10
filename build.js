@@ -7,4 +7,11 @@ await esbuild.build({
   format: 'iife',
 });
 
+await esbuild.build({
+  entryPoints: ['content/youtube-progress.js'],
+  bundle: true,
+  outdir: 'dist/content',
+  format: 'iife',
+});
+
 console.log('Build complete: dist/');

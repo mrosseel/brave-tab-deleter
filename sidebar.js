@@ -17,6 +17,10 @@ const ungroupOption = document.getElementById('ungroup-option');
 // Settings state
 let allWindows = false;
 let otherGroupName = 'Other';
+let youtubeProgressEnabled = false;
+
+// YouTube progress tracking: tabId -> { progress, videoId }
+const youtubeProgress = new Map();
 
 // Load settings from storage
 async function loadSettings() {
@@ -24,6 +28,22 @@ async function loadSettings() {
   if (stored.settings) {
     allWindows = stored.settings.allWindows || false;
     otherGroupName = stored.settings.otherGroupName || 'Other';
+    youtubeProgressEnabled = stored.settings.youtubeProgress || false;
+  }
+}
+
+// Load initial YouTube progress from background
+async function loadYoutubeProgress() {
+  if (!youtubeProgressEnabled) return;
+  try {
+    const response = await chrome.runtime.sendMessage({ type: 'getYoutubeProgress' });
+    if (response && response.progress) {
+      for (const [tabId, data] of Object.entries(response.progress)) {
+        youtubeProgress.set(parseInt(tabId), data);
+      }
+    }
+  } catch {
+    // Ignore errors
   }
 }
 
@@ -878,6 +898,20 @@ function createTabElement(tab, groupInfo, onClose) {
   div.appendChild(closeBtn);
   div.appendChild(faviconWrapper);
   div.appendChild(title);
+
+  // YouTube progress bar
+  if (youtubeProgressEnabled && tab.url && tab.url.startsWith('https://www.youtube.com/watch')) {
+    const progressData = youtubeProgress.get(tab.id);
+    if (progressData && progressData.progress != null) {
+      const progressBar = document.createElement('div');
+      progressBar.className = 'youtube-progress-bar';
+      const progressFill = document.createElement('div');
+      progressFill.className = 'youtube-progress-fill';
+      progressFill.style.width = `${progressData.progress}%`;
+      progressBar.appendChild(progressFill);
+      div.appendChild(progressBar);
+    }
+  }
 
   div.addEventListener('click', (e) => {
     if (e.ctrlKey || e.metaKey) {
@@ -1781,6 +1815,7 @@ async function render(source = 'unknown', forceRender = false) {
   await loadSettings();
   await loadGhostGroups();
   await loadSleepingGroups();
+  await loadYoutubeProgress();
   // Notify background to apply auto-grouping (if enabled)
   chrome.runtime.sendMessage({ type: 'sidebarOpened' });
   // Small delay to let grouping complete before render
@@ -1801,6 +1836,15 @@ chrome.storage.onChanged.addListener(async (changes, area) => {
     }
     if (newSettings && newSettings.otherGroupName !== otherGroupName) {
       otherGroupName = newSettings.otherGroupName || 'Other';
+      needsRender = true;
+    }
+    if (newSettings && newSettings.youtubeProgress !== youtubeProgressEnabled) {
+      youtubeProgressEnabled = newSettings.youtubeProgress || false;
+      if (youtubeProgressEnabled) {
+        await loadYoutubeProgress();
+      } else {
+        youtubeProgress.clear();
+      }
       needsRender = true;
     }
     if (needsRender) {
@@ -1875,3 +1919,34 @@ chrome.tabs.onActivated.addListener((activeInfo) => {
 chrome.tabGroups.onCreated.addListener(() => render('tabGroups.onCreated'));
 chrome.tabGroups.onRemoved.addListener(() => render('tabGroups.onRemoved'));
 chrome.tabGroups.onUpdated.addListener(() => render('tabGroups.onUpdated'));
+
+// Listen for YouTube progress updates
+chrome.runtime.onMessage.addListener((message) => {
+  if (message.type === 'youtubeProgressUpdate' && youtubeProgressEnabled) {
+    const tabId = message.tabId;
+    if (message.progress == null) {
+      youtubeProgress.delete(tabId);
+    } else {
+      youtubeProgress.set(tabId, { progress: message.progress, videoId: message.videoId });
+    }
+    // Update progress bar in-place without full re-render
+    const tabEl = document.querySelector(`[data-tab-id="${tabId}"]`);
+    if (tabEl) {
+      let progressBar = tabEl.querySelector('.youtube-progress-bar');
+      if (message.progress == null) {
+        if (progressBar) progressBar.remove();
+      } else {
+        if (!progressBar) {
+          progressBar = document.createElement('div');
+          progressBar.className = 'youtube-progress-bar';
+          const progressFill = document.createElement('div');
+          progressFill.className = 'youtube-progress-fill';
+          progressBar.appendChild(progressFill);
+          tabEl.appendChild(progressBar);
+        }
+        const fill = progressBar.querySelector('.youtube-progress-fill');
+        if (fill) fill.style.width = `${message.progress}%`;
+      }
+    }
+  }
+});

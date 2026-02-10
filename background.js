@@ -24,6 +24,9 @@ const sidebarOpen = new Map();
 // Settings cache
 let settings = { ...DEFAULT_SETTINGS };
 
+// YouTube progress tracking: tabId -> { progress, videoId }
+const youtubeProgress = new Map();
+
 // Track tab activation times for auto-ordering
 const tabActivationTimes = new Map();
 
@@ -79,6 +82,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     emitSettingsChanges(oldSettings, settings, { windowId });
   } else if (message.type === 'sidebarOpened') {
     withGroupingLock(() => applyAutoGroupingToAll());
+    // Start YouTube polling for this window
+    if (sender.tab?.windowId) {
+      sidebarOpen.set(sender.tab.windowId, true);
+      sendYoutubePollingControl(sender.tab.windowId, true);
+    } else {
+      // Fallback: get current window
+      chrome.windows.getCurrent().then(win => {
+        sidebarOpen.set(win.id, true);
+        sendYoutubePollingControl(win.id, true);
+      });
+    }
   } else if (message.type === 'refreshAll') {
     withGroupingLock(async () => {
       await applyAutoGroupingToAll();
@@ -105,6 +119,31 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     markAsAutoGroup(message.groupId);
     sendResponse({ success: true });
     return true;
+  } else if (message.type === 'youtubeProgress') {
+    if (sender.tab && settings.youtubeProgress) {
+      youtubeProgress.set(sender.tab.id, {
+        progress: message.progress,
+        videoId: message.videoId
+      });
+      // Broadcast to all sidebars
+      chrome.runtime.sendMessage({
+        type: 'youtubeProgressUpdate',
+        tabId: sender.tab.id,
+        progress: message.progress,
+        videoId: message.videoId
+      }).catch(() => {});
+    }
+  } else if (message.type === 'getYoutubeProgress') {
+    sendResponse({ progress: Object.fromEntries(youtubeProgress) });
+    return true;
+  } else if (message.type === 'youtubeContentScriptReady') {
+    // Content script ready, start polling if sidebar is open
+    if (sender.tab) {
+      const windowId = sender.tab.windowId;
+      if (sidebarOpen.get(windowId) && settings.youtubeProgress) {
+        chrome.tabs.sendMessage(sender.tab.id, { type: 'startYoutubePolling' }).catch(() => {});
+      }
+    }
   }
 });
 
@@ -114,8 +153,44 @@ chrome.storage.onChanged.addListener(async (changes, areaName) => {
     const oldSettings = { ...settings };
     settings = { ...settings, ...changes.settings.newValue };
     await emitSettingsChanges(oldSettings, settings);
+
+    // Handle youtubeProgress setting change - send to all YouTube tabs
+    if (oldSettings.youtubeProgress !== settings.youtubeProgress) {
+      const windows = await chrome.windows.getAll({ windowTypes: ['normal'] });
+      for (const win of windows) {
+        sendYoutubePollingControl(win.id, settings.youtubeProgress);
+      }
+    }
   }
 });
+
+// Send YouTube polling control to all YouTube tabs in a window
+async function sendYoutubePollingControl(windowId, start) {
+  if (!settings.youtubeProgress && start) return;
+  try {
+    const tabs = await chrome.tabs.query({ windowId });
+    for (const tab of tabs) {
+      if (tab.url && tab.url.startsWith('https://www.youtube.com/')) {
+        if (start) {
+          // Try to inject content script if not already running
+          try {
+            await chrome.scripting.executeScript({
+              target: { tabId: tab.id },
+              files: ['dist/content/youtube-progress.js']
+            });
+          } catch {
+            // Script may already be injected or tab not accessible
+          }
+        }
+        chrome.tabs.sendMessage(tab.id, {
+          type: start ? 'startYoutubePolling' : 'stopYoutubePolling'
+        }).catch(() => {});
+      }
+    }
+  } catch {
+    // Ignore errors
+  }
+}
 
 // Toggle side panel when extension icon is clicked
 chrome.action.onClicked.addListener(async (tab) => {
@@ -128,9 +203,13 @@ chrome.action.onClicked.addListener(async (tab) => {
     await chrome.sidePanel.setOptions({ tabId: tab.id, enabled: false });
     await chrome.sidePanel.setOptions({ tabId: tab.id, enabled: true, path: 'sidebar.html' });
     sidebarOpen.set(windowId, false);
+    // Stop YouTube polling
+    sendYoutubePollingControl(windowId, false);
   } else {
     await chrome.sidePanel.open({ windowId });
     sidebarOpen.set(windowId, true);
+    // Start YouTube polling
+    sendYoutubePollingControl(windowId, true);
   }
 });
 
@@ -588,6 +667,7 @@ bus.on('settings:customGroups', async () => {
 bus.on('tab:created', (tab) => updateBadge(settings.allWindows ? undefined : tab.windowId));
 bus.on('tab:removed', (tabId, removeInfo) => updateBadge(settings.allWindows ? undefined : removeInfo.windowId));
 bus.on('tab:removed', (tabId) => tabActivationTimes.delete(tabId));
+bus.on('tab:removed', (tabId) => youtubeProgress.delete(tabId));
 
 bus.on('tab:activated', async (activeInfo) => {
   if (!settings.allWindows) {
@@ -602,6 +682,18 @@ bus.on('tab:activated', async (activeInfo) => {
 });
 
 bus.on('tab:updated', async (tabId, changeInfo, tab) => {
+  // Clear YouTube progress if tab navigates away from YouTube
+  if (changeInfo.url && youtubeProgress.has(tabId)) {
+    if (!changeInfo.url.startsWith('https://www.youtube.com/watch')) {
+      youtubeProgress.delete(tabId);
+      chrome.runtime.sendMessage({
+        type: 'youtubeProgressUpdate',
+        tabId,
+        progress: null,
+        videoId: null
+      }).catch(() => {});
+    }
+  }
   if (changeInfo.status !== 'complete') return;
   if (shouldSkipUrl(tab.url)) return;
   withGroupingLock(() => groupSingleTab(tab));

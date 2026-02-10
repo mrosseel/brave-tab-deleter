@@ -24,6 +24,7 @@ const modalCancel = document.getElementById('modal-cancel');
 const modalSave = document.getElementById('modal-save');
 const otherGroupNameInput = document.getElementById('other-group-name');
 const refreshBtn = document.getElementById('refresh-btn');
+const youtubeProgressToggle = document.getElementById('youtube-progress');
 
 // Load settings from storage
 async function loadSettings() {
@@ -42,13 +43,20 @@ async function saveSettings() {
 }
 
 // Update UI with current settings
-function updateUI() {
+async function updateUI() {
   allWindowsToggle.checked = settings.allWindows;
   autoGroupingToggle.checked = settings.autoGrouping;
   autoOrderingToggle.checked = settings.autoOrdering;
   autoOrderingSeconds.value = settings.autoOrderingSeconds;
   otherGroupNameInput.value = settings.otherGroupName || 'Other';
   customGroupingToggle.checked = settings.customGrouping;
+
+  // Check if YouTube permission is granted to sync toggle state
+  const hasYoutubePermission = await chrome.permissions.contains({
+    origins: ['https://www.youtube.com/*']
+  });
+  youtubeProgressToggle.checked = settings.youtubeProgress && hasYoutubePermission;
+
   renderCustomGroups();
 }
 
@@ -254,6 +262,29 @@ modalSave.addEventListener('click', saveGroup);
 
 refreshBtn.addEventListener('click', () => {
   chrome.runtime.sendMessage({ type: 'refreshAll' });
+});
+
+youtubeProgressToggle.addEventListener('change', async () => {
+  if (youtubeProgressToggle.checked) {
+    // Request permission
+    const granted = await chrome.permissions.request({
+      origins: ['https://www.youtube.com/*']
+    });
+    if (granted) {
+      settings.youtubeProgress = true;
+      saveSettings();
+    } else {
+      // Permission denied, uncheck toggle
+      youtubeProgressToggle.checked = false;
+    }
+  } else {
+    // Remove permission and disable setting
+    settings.youtubeProgress = false;
+    saveSettings();
+    await chrome.permissions.remove({
+      origins: ['https://www.youtube.com/*']
+    });
+  }
 });
 
 modalOverlay.addEventListener('click', (e) => {
