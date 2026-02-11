@@ -28,11 +28,11 @@ FEATURES:
 
 - Audio Indicator - See which tabs are playing audio with a speaker icon on the favicon
 
+- YouTube Progress - Opt-in feature to show video progress bars for YouTube tabs (requires permission)
+
 Works with Chrome and Brave browsers.
 
 ## Changelog
 
-### v1.4.1 (2026-02-09)
-- Fix two-part TLD detection for all country codes (com.be, co.fr, org.nz, etc.)
-- Fix ghost tab dragging to other groups
-- Prevent re-renders during async drag operations
+### v1.5.0 (2026-02-11)
+- Add YouTube video progress bars in sidebar (opt-in, toggle in settings)
