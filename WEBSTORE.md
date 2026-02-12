@@ -30,9 +30,13 @@ FEATURES:
 
 - YouTube Progress - Opt-in feature to show video progress bars for YouTube tabs (requires permission)
 
+- Tab Search - Click the search icon to filter tabs by title with wildcard support (use * as wildcard)
+
 Works with Chrome and Brave browsers.
 
 ## Changelog
 
-### v1.5.0 (2026-02-11)
-- Add YouTube video progress bars in sidebar (opt-in, toggle in settings)
+### v1.6.0 (2026-02-12)
+- Add tab search with wildcard support (click magnifying glass icon)
+- Fix YouTube progress persistence across sidebar close/reopen
+- Fix content script reload handling for YouTube tabs
