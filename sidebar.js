@@ -13,6 +13,13 @@ const expandAllBtn = document.getElementById('expand-all-btn');
 const contextMenu = document.getElementById('context-menu');
 const moveToGroupSubmenu = document.getElementById('move-to-group-submenu');
 const ungroupOption = document.getElementById('ungroup-option');
+const sidebarHeader = document.querySelector('.sidebar-header');
+const searchBtn = document.getElementById('search-btn');
+const searchInput = document.getElementById('search-input');
+const searchClearBtn = document.getElementById('search-clear-btn');
+
+// Search state
+let searchQuery = '';
 
 // Settings state
 let allWindows = false;
@@ -1808,6 +1815,11 @@ async function render(source = 'unknown', forceRender = false) {
   } else {
     window.scrollTo(0, scrollTop);
   }
+
+  // Re-apply search filter after render
+  if (searchQuery) {
+    applySearchFilter();
+  }
 }
 
 // Initialize: load settings, ghost groups, sleeping groups, trigger auto-grouping, then render
@@ -1901,6 +1913,68 @@ setInterval(async () => {
     render('ghost-expired');
   }
 }, GHOST_COUNTDOWN_INTERVAL_MS);
+
+// Search functionality
+function enterSearchMode() {
+  sidebarHeader.classList.add('search-mode');
+  searchInput.focus();
+}
+
+function exitSearchMode() {
+  sidebarHeader.classList.remove('search-mode');
+  searchInput.value = '';
+  searchQuery = '';
+  applySearchFilter();
+}
+
+function wildcardToRegex(pattern) {
+  // Escape regex special chars except *, then convert * to .*
+  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+  const regex = escaped.replace(/\*/g, '.*');
+  return new RegExp(regex, 'i');
+}
+
+function applySearchFilter() {
+  const query = searchQuery.trim();
+
+  if (!query) {
+    // Clear all filters
+    document.querySelectorAll('.tab-item.search-hidden').forEach(el => el.classList.remove('search-hidden'));
+    document.querySelectorAll('.tab-group.search-hidden').forEach(el => el.classList.remove('search-hidden'));
+    return;
+  }
+
+  const regex = wildcardToRegex(query);
+
+  // Filter tabs
+  document.querySelectorAll('.tab-item').forEach(tabEl => {
+    const titleEl = tabEl.querySelector('.tab-title');
+    const title = titleEl?.textContent || '';
+    const matches = regex.test(title);
+    tabEl.classList.toggle('search-hidden', !matches);
+  });
+
+  // Hide groups with no visible tabs
+  document.querySelectorAll('.tab-group').forEach(groupEl => {
+    const visibleTabs = groupEl.querySelectorAll('.tab-item:not(.search-hidden)');
+    groupEl.classList.toggle('search-hidden', visibleTabs.length === 0);
+  });
+}
+
+searchBtn.addEventListener('click', enterSearchMode);
+
+searchClearBtn.addEventListener('click', exitSearchMode);
+
+searchInput.addEventListener('input', () => {
+  searchQuery = searchInput.value;
+  applySearchFilter();
+});
+
+searchInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    exitSearchMode();
+  }
+});
 
 chrome.tabs.onCreated.addListener(() => render('tabs.onCreated'));
 chrome.tabs.onRemoved.addListener(async (tabId) => {
