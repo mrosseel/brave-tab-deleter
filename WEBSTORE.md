@@ -40,3 +40,6 @@ Works with Chrome and Brave browsers.
 - Add tab search with wildcard support (click magnifying glass icon)
 - Fix YouTube progress persistence across sidebar close/reopen
 - Fix content script reload handling for YouTube tabs
+
+### v1.5.0 (2026-02-11)
+- Add YouTube video progress bars in sidebar (opt-in, toggle in settings)
