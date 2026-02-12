@@ -6,11 +6,10 @@ if (window.location.hostname !== 'www.youtube.com') {
   throw new Error('Not www.youtube.com');
 }
 
-// Guard against multiple injections
-if (window.__youtubeProgressInjected) {
-  throw new Error('Already injected');
+// Clean up any previous instance (handles extension reload)
+if (window.__youtubeProgressCleanup) {
+  window.__youtubeProgressCleanup();
 }
-window.__youtubeProgressInjected = true;
 
 let isPolling = false;
 let pollIntervalId = null;
@@ -87,6 +86,11 @@ history.replaceState = function(...args) {
 };
 
 window.addEventListener('popstate', onNavigation);
+
+// Cleanup function for when script is re-injected
+window.__youtubeProgressCleanup = () => {
+  stopPolling();
+};
 
 // Notify background that content script is ready
 chrome.runtime.sendMessage({ type: 'youtubeContentScriptReady' }).catch(() => {});

@@ -25,7 +25,24 @@ const sidebarOpen = new Map();
 let settings = { ...DEFAULT_SETTINGS };
 
 // YouTube progress tracking: tabId -> { progress, videoId }
-const youtubeProgress = new Map();
+let youtubeProgress = new Map();
+
+// Load YouTube progress from session storage
+async function loadYoutubeProgress() {
+  try {
+    const stored = await chrome.storage.session.get('youtubeProgress');
+    if (stored.youtubeProgress) {
+      youtubeProgress = new Map(stored.youtubeProgress);
+    }
+  } catch {}
+}
+
+// Save YouTube progress to session storage
+async function saveYoutubeProgress() {
+  try {
+    await chrome.storage.session.set({ youtubeProgress: [...youtubeProgress.entries()] });
+  } catch {}
+}
 
 // Track tab activation times for auto-ordering
 const tabActivationTimes = new Map();
@@ -125,6 +142,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         progress: message.progress,
         videoId: message.videoId
       });
+      saveYoutubeProgress();
       // Broadcast to all sidebars
       chrome.runtime.sendMessage({
         type: 'youtubeProgressUpdate',
@@ -171,6 +189,9 @@ async function sendYoutubePollingControl(windowId, start) {
     const tabs = await chrome.tabs.query({ windowId });
     for (const tab of tabs) {
       if (tab.url && tab.url.startsWith('https://www.youtube.com/')) {
+        // Skip discarded tabs - they'll get injected when restored
+        if (tab.discarded) continue;
+
         if (start) {
           // Try to inject content script if not already running
           try {
@@ -640,6 +661,7 @@ async function init() {
   await loadSettings();
   await loadAutoGroupIds();
   await loadManualGroupIds();
+  await loadYoutubeProgress();
   updateBadge();
   // Don't auto-group on init - only when sidebar opens
 }
@@ -667,7 +689,9 @@ bus.on('settings:customGroups', async () => {
 bus.on('tab:created', (tab) => updateBadge(settings.allWindows ? undefined : tab.windowId));
 bus.on('tab:removed', (tabId, removeInfo) => updateBadge(settings.allWindows ? undefined : removeInfo.windowId));
 bus.on('tab:removed', (tabId) => tabActivationTimes.delete(tabId));
-bus.on('tab:removed', (tabId) => youtubeProgress.delete(tabId));
+bus.on('tab:removed', (tabId) => {
+  if (youtubeProgress.delete(tabId)) saveYoutubeProgress();
+});
 
 bus.on('tab:activated', async (activeInfo) => {
   if (!settings.allWindows) {
@@ -686,6 +710,7 @@ bus.on('tab:updated', async (tabId, changeInfo, tab) => {
   if (changeInfo.url && youtubeProgress.has(tabId)) {
     if (!changeInfo.url.startsWith('https://www.youtube.com/watch')) {
       youtubeProgress.delete(tabId);
+      saveYoutubeProgress();
       chrome.runtime.sendMessage({
         type: 'youtubeProgressUpdate',
         tabId,
