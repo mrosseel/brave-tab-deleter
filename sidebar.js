@@ -13,6 +13,7 @@ const expandAllBtn = document.getElementById('expand-all-btn');
 const contextMenu = document.getElementById('context-menu');
 const moveToGroupSubmenu = document.getElementById('move-to-group-submenu');
 const ungroupOption = document.getElementById('ungroup-option');
+const scrollToActiveBtn = document.getElementById('scroll-to-active-btn');
 const sidebarHeader = document.querySelector('.sidebar-header');
 const searchBtn = document.getElementById('search-btn');
 const searchInput = document.getElementById('search-input');
@@ -20,6 +21,7 @@ const searchClearBtn = document.getElementById('search-clear-btn');
 
 // Search state
 let searchQuery = '';
+let collapsedBeforeSearch = new Set(); // Track which groups were collapsed before search
 
 // Settings state
 let allWindows = false;
@@ -158,6 +160,12 @@ let contextMenuTabs = [];
 // Settings button click handler
 settingsBtn.addEventListener('click', () => {
   window.location.href = 'settings.html';
+});
+
+// Scroll to active tab button
+scrollToActiveBtn.addEventListener('click', async () => {
+  const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (activeTab) scrollToTab(activeTab.id);
 });
 
 // Context menu functions
@@ -1399,22 +1407,29 @@ function createSleepingTabsPreview(tabs) {
 // Setup collapse click handler for header
 function setupCollapseHandler(header, tabsContainer, groupInfo, isUngrouped) {
   header.addEventListener('click', async (e) => {
-    if (e.target.closest('.close-group-btn')) return;
+    if (e.target.closest('.close-group-btn') || e.target.closest('.sleep-btn')) return;
 
     if (isUngrouped) {
       otherCollapsed = !otherCollapsed;
       header.classList.toggle('collapsed', otherCollapsed);
       tabsContainer.classList.toggle('collapsed', otherCollapsed);
     } else if (groupInfo?.id) {
+      // Toggle visually immediately
+      const nowCollapsed = !tabsContainer.classList.contains('collapsed');
+      header.classList.toggle('collapsed', nowCollapsed);
+      tabsContainer.classList.toggle('collapsed', nowCollapsed);
       try {
-        const currentGroups = await chrome.tabGroups.query({});
-        const currentGroup = currentGroups.find(g => g.id === groupInfo.id);
-        if (currentGroup) {
-          await chrome.tabGroups.update(groupInfo.id, { collapsed: !currentGroup.collapsed });
-        }
+        await chrome.tabGroups.update(groupInfo.id, { collapsed: nowCollapsed });
       } catch (err) {
+        // Revert visual state on failure
+        header.classList.toggle('collapsed', !nowCollapsed);
+        tabsContainer.classList.toggle('collapsed', !nowCollapsed);
         console.error('Failed to toggle collapse:', err);
       }
+    } else {
+      // Fallback for groups without a tracked Chrome group ID (e.g., ghost/orphaned)
+      header.classList.toggle('collapsed');
+      tabsContainer.classList.toggle('collapsed');
     }
   });
 }
@@ -1811,7 +1826,7 @@ async function render(source = 'unknown', forceRender = false) {
   if (pendingScrollToTabId !== null) {
     const tabIdToScroll = pendingScrollToTabId;
     pendingScrollToTabId = null;
-    requestAnimationFrame(() => scrollToTab(tabIdToScroll));
+    scrollToTab(tabIdToScroll);
   } else {
     window.scrollTo(0, scrollTop);
   }
@@ -1918,12 +1933,37 @@ setInterval(async () => {
 function enterSearchMode() {
   sidebarHeader.classList.add('search-mode');
   searchInput.focus();
+
+  // Save collapsed state and expand all groups for search
+  collapsedBeforeSearch.clear();
+  document.querySelectorAll('.group-tabs.collapsed').forEach(tabsContainer => {
+    const groupEl = tabsContainer.closest('.tab-group');
+    if (groupEl) {
+      collapsedBeforeSearch.add(groupEl.dataset.groupId);
+      tabsContainer.classList.remove('collapsed');
+      const header = groupEl.querySelector('.group-header');
+      if (header) header.classList.remove('collapsed');
+    }
+  });
 }
 
 function exitSearchMode() {
   sidebarHeader.classList.remove('search-mode');
   searchInput.value = '';
   searchQuery = '';
+
+  // Restore collapsed state
+  collapsedBeforeSearch.forEach(groupId => {
+    const groupEl = document.querySelector(`[data-group-id="${groupId}"]`);
+    if (groupEl) {
+      const tabsContainer = groupEl.querySelector('.group-tabs');
+      const header = groupEl.querySelector('.group-header');
+      if (tabsContainer) tabsContainer.classList.add('collapsed');
+      if (header) header.classList.add('collapsed');
+    }
+  });
+  collapsedBeforeSearch.clear();
+
   applySearchFilter();
 }
 

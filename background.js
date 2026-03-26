@@ -16,7 +16,7 @@ import {
 import { DEFAULT_SETTINGS } from './lib/settings-defaults.js';
 import { bus, emitSettingsChanges } from './lib/events.js';
 
-console.log('=== BACKGROUND.JS VERSION 7 LOADED ===');
+console.log('=== BACKGROUND.JS VERSION 11 LOADED ===');
 
 // Track sidebar state per window
 const sidebarOpen = new Map();
@@ -41,6 +41,25 @@ async function loadYoutubeProgress() {
 async function saveYoutubeProgress() {
   try {
     await chrome.storage.session.set({ youtubeProgress: [...youtubeProgress.entries()] });
+  } catch {}
+}
+
+// Load sidebarOpen from session storage (survives service worker hibernation)
+async function loadSidebarOpen() {
+  try {
+    const stored = await chrome.storage.session.get('sidebarOpen');
+    if (stored.sidebarOpen) {
+      for (const [k, v] of stored.sidebarOpen) {
+        sidebarOpen.set(k, v);
+      }
+    }
+  } catch {}
+}
+
+// Save sidebarOpen to session storage
+async function saveSidebarOpen() {
+  try {
+    await chrome.storage.session.set({ sidebarOpen: [...sidebarOpen.entries()] });
   } catch {}
 }
 
@@ -102,11 +121,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // Start YouTube polling for this window
     if (sender.tab?.windowId) {
       sidebarOpen.set(sender.tab.windowId, true);
+      saveSidebarOpen();
       sendYoutubePollingControl(sender.tab.windowId, true);
     } else {
       // Fallback: get current window
       chrome.windows.getCurrent().then(win => {
         sidebarOpen.set(win.id, true);
+        saveSidebarOpen();
         sendYoutubePollingControl(win.id, true);
       });
     }
@@ -155,12 +176,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     sendResponse({ progress: Object.fromEntries(youtubeProgress) });
     return true;
   } else if (message.type === 'youtubeContentScriptReady') {
-    // Content script ready, start polling if sidebar is open
     if (sender.tab) {
       const windowId = sender.tab.windowId;
-      if (sidebarOpen.get(windowId) && settings.youtubeProgress) {
-        chrome.tabs.sendMessage(sender.tab.id, { type: 'startYoutubePolling' }).catch(() => {});
-      }
+      const shouldPoll = !!(sidebarOpen.get(windowId) && settings.youtubeProgress);
+      sendResponse({ startPolling: shouldPoll });
+      return true;
     }
   }
 });
@@ -224,11 +244,13 @@ chrome.action.onClicked.addListener(async (tab) => {
     await chrome.sidePanel.setOptions({ tabId: tab.id, enabled: false });
     await chrome.sidePanel.setOptions({ tabId: tab.id, enabled: true, path: 'sidebar.html' });
     sidebarOpen.set(windowId, false);
+    saveSidebarOpen();
     // Stop YouTube polling
     sendYoutubePollingControl(windowId, false);
   } else {
     await chrome.sidePanel.open({ windowId });
     sidebarOpen.set(windowId, true);
+    saveSidebarOpen();
     // Start YouTube polling
     sendYoutubePollingControl(windowId, true);
   }
@@ -300,12 +322,23 @@ async function findGroupByTitleAndColor(windowId, title, color) {
   return groups.find(g => g.title === title && g.color === color);
 }
 
-// Find existing auto-created group for domain (by title, any color)
+// Find existing auto-created group for domain (by title, then by tab content)
 async function findAutoGroupForDomain(windowId, domain) {
   const expectedTitle = getShortName(domain).toLowerCase();
   const groups = await chrome.tabGroups.query({ windowId });
-  // Find by title (case-insensitive) - auto groups can have any color now
-  return groups.find(g => g.title?.toLowerCase() === expectedTitle);
+  // First: match by title (case-insensitive)
+  const byTitle = groups.find(g => g.title?.toLowerCase() === expectedTitle);
+  if (byTitle) return byTitle;
+  // Fallback: find a group where all tabs share this domain (catches unnamed/renamed groups)
+  for (const group of groups) {
+    if (isManualGroupId(group.id)) continue;
+    const tabs = await chrome.tabs.query({ groupId: group.id });
+    if (tabs.length === 0) continue;
+    if (tabs.every(t => getDomain(t.url) === domain)) {
+      return group;
+    }
+  }
+  return null;
 }
 
 // Get colors reserved by custom groups
@@ -376,7 +409,9 @@ async function groupSingleTab(tab) {
   }
 
   // Skip tabs in manual groups (but only after custom group check above)
-  if (currentTab.groupId !== -1 && isManualGroupId(currentTab.groupId)) return;
+  if (currentTab.groupId !== -1 && isManualGroupId(currentTab.groupId)) {
+    return;
+  }
 
   // 2. Check auto groups (if enabled)
   if (settings.autoGrouping) {
@@ -391,10 +426,11 @@ async function groupSingleTab(tab) {
     }
 
     // No existing auto group - check if we can create one (2+ tabs with same domain)
+    // Include ungrouped tabs and tabs in non-manual groups with same domain
     const allTabs = await chrome.tabs.query({ windowId: currentTab.windowId });
     const sameDomainTabs = allTabs.filter(t =>
       t.id !== currentTab.id &&
-      t.groupId === -1 &&
+      (t.groupId === -1 || !isManualGroupId(t.groupId)) &&
       getDomain(t.url) === domain
     );
 
@@ -662,6 +698,7 @@ async function init() {
   await loadAutoGroupIds();
   await loadManualGroupIds();
   await loadYoutubeProgress();
+  await loadSidebarOpen();
   updateBadge();
   // Don't auto-group on init - only when sidebar opens
 }

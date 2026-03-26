@@ -92,5 +92,9 @@ window.__youtubeProgressCleanup = () => {
   stopPolling();
 };
 
-// Notify background that content script is ready
-chrome.runtime.sendMessage({ type: 'youtubeContentScriptReady' }).catch(() => {});
+// Notify background that content script is ready and auto-start if told to
+chrome.runtime.sendMessage({ type: 'youtubeContentScriptReady' }, (response) => {
+  if (response && response.startPolling) {
+    startPolling();
+  }
+});
