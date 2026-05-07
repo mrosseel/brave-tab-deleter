@@ -128,6 +128,20 @@ body {
   color: var(--text-color);
 }
 
+.header-btn.inactive {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.header-btn.inactive:hover {
+  background-color: transparent;
+  color: var(--close-btn-color);
+}
+
+#scroll-to-playing-btn:not(.inactive) {
+  color: #e8710a;
+}
+
 #tab-list {
   padding: 8px 0;
 }

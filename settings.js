@@ -35,11 +35,9 @@ async function loadSettings() {
   updateUI();
 }
 
-// Save settings to storage
+// Save settings to storage — storage.onChanged drives all downstream handlers
 async function saveSettings() {
   await chrome.storage.sync.set({ settings });
-  // Notify background script of settings change
-  chrome.runtime.sendMessage({ type: 'settingsUpdated', settings });
 }
 
 // Update UI with current settings
@@ -222,7 +220,7 @@ autoGroupingToggle.addEventListener('change', () => {
   saveSettings();
   // Apply grouping immediately when enabled
   if (autoGroupingToggle.checked) {
-    chrome.runtime.sendMessage({ type: 'sidebarOpened' });
+    chrome.runtime.sendMessage({ type: 'sidebarOpened' }).catch(() => {});
   }
 });
 
@@ -261,7 +259,7 @@ modalCancel.addEventListener('click', closeModal);
 modalSave.addEventListener('click', saveGroup);
 
 refreshBtn.addEventListener('click', () => {
-  chrome.runtime.sendMessage({ type: 'refreshAll' });
+  chrome.runtime.sendMessage({ type: 'refreshAll' }).catch(() => {});
 });
 
 youtubeProgressToggle.addEventListener('change', async () => {

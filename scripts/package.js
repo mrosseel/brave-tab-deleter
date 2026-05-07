@@ -31,6 +31,7 @@ const includeFiles = [
   'dist/background.js',
   'dist/sidebar.js',
   'dist/settings.js',
+  'dist/content/youtube-progress.js',
   'icons/icon16.png',
   'icons/icon48.png',
   'icons/icon128.png',

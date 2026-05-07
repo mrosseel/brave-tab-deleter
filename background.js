@@ -67,38 +67,94 @@ async function saveSidebarOpen() {
 const tabActivationTimes = new Map();
 
 
-// Check if a group qualifies as auto (all tabs same domain, title matches)
+// Check if a group qualifies as auto (all tabs same domain)
+// After crash/restart, session storage is lost so we re-classify and rename if needed
 async function checkAndUpdateGroupStatus(groupId) {
   try {
     const group = await chrome.tabGroups.get(groupId);
     const tabs = await chrome.tabs.query({ groupId });
 
     if (tabs.length < 2) {
-      unmarkAutoGroup(groupId);
+      await unmarkAutoGroup(groupId);
       return false;
     }
 
     const firstDomain = getDomain(tabs[0].url);
     const allSameDomain = tabs.every(t => getDomain(t.url) === firstDomain);
-    const titleMatches = group.title?.toLowerCase() === getShortName(firstDomain).toLowerCase();
+    const expectedTitle = getShortName(firstDomain);
+    const titleMatches = group.title?.toLowerCase() === expectedTitle.toLowerCase();
 
-    if (allSameDomain && titleMatches) {
+    if (allSameDomain) {
+      if (!titleMatches) {
+        // Restore title lost after crash/restart
+        await chrome.tabGroups.update(groupId, { title: expectedTitle });
+      }
       if (!isAutoGroupId(groupId)) {
-        markAsAutoGroup(groupId);
+        await markAsAutoGroup(groupId);
       }
       return true;
     } else {
-      unmarkAutoGroup(groupId);
+      await unmarkAutoGroup(groupId);
       return false;
     }
   } catch {
-    unmarkAutoGroup(groupId);
+    await unmarkAutoGroup(groupId);
     return false;
   }
 }
 
 // SINGLE GLOBAL LOCK for all grouping operations
 const withGroupingLock = createLock();
+
+// Coalesce per-tab grouping work. Bursts (e.g. session restore) are batched
+// into a single bulk pass instead of dozens of locked operations.
+const PER_TAB_DEBOUNCE_MS = 200;
+const BURST_TO_BULK_THRESHOLD = 5;
+const pendingTabIds = new Set();
+let pendingTabTimer = null;
+let bulkPending = false;
+
+async function scheduleBulkGrouping() {
+  if (bulkPending) return;
+  bulkPending = true;
+  try {
+    await withGroupingLock(async () => {
+      try {
+        await applyAutoGroupingToAll();
+      } catch (err) {
+        console.error('[bg] applyAutoGroupingToAll failed:', err);
+      }
+    });
+  } finally {
+    bulkPending = false;
+  }
+}
+
+function scheduleSingleTabGrouping(tabId) {
+  pendingTabIds.add(tabId);
+  if (pendingTabTimer) clearTimeout(pendingTabTimer);
+  pendingTabTimer = setTimeout(() => {
+    pendingTabTimer = null;
+    const ids = [...pendingTabIds];
+    pendingTabIds.clear();
+    if (ids.length === 0) return;
+    if (bulkPending) return; // Bulk pass already on its way
+    if (ids.length >= BURST_TO_BULK_THRESHOLD) {
+      scheduleBulkGrouping().catch(err => console.error('[bg] bulk grouping failed:', err));
+      return;
+    }
+    withGroupingLock(async () => {
+      for (const id of ids) {
+        try {
+          const t = await chrome.tabs.get(id);
+          await groupSingleTab(t);
+        } catch {
+          // Tab gone or grouping threw; skip
+        }
+      }
+    }).catch(err => console.error('[bg] per-tab grouping failed:', err));
+  }, PER_TAB_DEBOUNCE_MS);
+}
 
 
 // Load settings from storage
@@ -111,13 +167,10 @@ async function loadSettings() {
 
 // Listen for messages
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.type === 'settingsUpdated') {
-    const oldSettings = { ...settings };
-    settings = { ...settings, ...message.settings };
-    const windowId = sender.tab?.windowId;
-    emitSettingsChanges(oldSettings, settings, { windowId });
-  } else if (message.type === 'sidebarOpened') {
-    withGroupingLock(() => applyAutoGroupingToAll());
+  if (message.type === 'sidebarOpened') {
+    scheduleBulkGrouping()
+      .catch(err => console.error('[bg] sidebarOpened bulk failed:', err))
+      .finally(() => sendResponse({ done: true }));
     // Start YouTube polling for this window
     if (sender.tab?.windowId) {
       sidebarOpen.set(sender.tab.windowId, true);
@@ -131,10 +184,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendYoutubePollingControl(win.id, true);
       });
     }
+    return true; // Keep message channel open for async response
   } else if (message.type === 'refreshAll') {
-    withGroupingLock(async () => {
-      await applyAutoGroupingToAll();
-    });
+    scheduleBulkGrouping().catch(err => console.error('[bg] refreshAll failed:', err));
     sendResponse({ success: true });
     return true;
   } else if (message.type === 'getGroupType') {
@@ -150,12 +202,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     return true;
   } else if (message.type === 'markManualGroup') {
-    markAsManualGroup(message.groupId);
-    sendResponse({ success: true });
+    markAsManualGroup(message.groupId).then(() => sendResponse({ success: true }));
     return true;
   } else if (message.type === 'markAutoGroup') {
-    markAsAutoGroup(message.groupId);
-    sendResponse({ success: true });
+    markAsAutoGroup(message.groupId).then(() => sendResponse({ success: true }));
     return true;
   } else if (message.type === 'youtubeProgress') {
     if (sender.tab && settings.youtubeProgress) {
@@ -440,7 +490,7 @@ async function groupSingleTab(tab) {
       const groupId = await chrome.tabs.group({ tabIds });
       const color = await getNextAvailableColor(currentTab.windowId);
       await chrome.tabGroups.update(groupId, { title: getShortName(domain), color });
-      markAsAutoGroup(groupId);
+      await markAsAutoGroup(groupId);
       return;
     }
   }
@@ -464,7 +514,7 @@ async function groupSingleTab(tab) {
       if (otherDomains.size > 1) {
         // Other tabs have mixed domains - this is a manual group
         // User intentionally put mismatched tabs together, respect that
-        unmarkAutoGroup(groupId);
+        await unmarkAutoGroup(groupId);
         return; // Don't ungroup, keep tab in place
       }
 
@@ -517,7 +567,7 @@ async function applyAutoGroupingToWindow(windowId) {
   // Find "Other" group and identify custom groups by title
   const otherGroup = groups.find(g => g.title === settings.otherGroupName && g.color === 'grey');
   const otherGroupId = otherGroup?.id;
-  if (otherGroupId) markAsAutoGroup(otherGroupId);
+  if (otherGroupId) await markAsAutoGroup(otherGroupId);
   const customGroupTitles = new Set((settings.customGroups || []).map(g => g.name));
   const customGroupIds = new Set(groups.filter(g => customGroupTitles.has(g.title)).map(g => g.id));
 
@@ -634,7 +684,11 @@ async function applyAutoGroupingToWindow(windowId) {
       if (existingGroup) {
         // Re-mark as auto (may have lost tracking after restart)
         if (!isAutoGroupId(existingGroup.id)) {
-          markAsAutoGroup(existingGroup.id);
+          await markAsAutoGroup(existingGroup.id);
+        }
+        // Restore title if lost after crash/restart
+        if (existingGroup.title?.toLowerCase() !== displayName.toLowerCase()) {
+          await chrome.tabGroups.update(existingGroup.id, { title: displayName });
         }
         // Only add tabs that aren't already in this group
         const tabsToAdd = domainTabs.filter(t => t.groupId !== existingGroup.id);
@@ -647,7 +701,7 @@ async function applyAutoGroupingToWindow(windowId) {
         const groupId = await chrome.tabs.group({ tabIds });
         const color = await getNextAvailableColor(domainTabs[0].windowId);
         await chrome.tabGroups.update(groupId, { title: displayName, color });
-        markAsAutoGroup(groupId);
+        await markAsAutoGroup(groupId);
       }
     }
   }
@@ -692,6 +746,20 @@ setInterval(() => {
   }
 }, AUTO_ORDERING_CHECK_INTERVAL_MS);
 
+// Recover group names and tracking after browser restart/crash
+// Session storage is wiped, so we re-classify all existing groups
+async function recoverGroups() {
+  const windows = await chrome.windows.getAll({ windowTypes: ['normal'] });
+  for (const win of windows) {
+    const groups = await chrome.tabGroups.query({ windowId: win.id });
+    for (const group of groups) {
+      if (!isAutoGroupId(group.id) && !isManualGroupId(group.id)) {
+        await checkAndUpdateGroupStatus(group.id);
+      }
+    }
+  }
+}
+
 // Initial setup
 async function init() {
   await loadSettings();
@@ -700,25 +768,29 @@ async function init() {
   await loadYoutubeProgress();
   await loadSidebarOpen();
   updateBadge();
-  // Don't auto-group on init - only when sidebar opens
+  await recoverGroups();
 }
 
 const initPromise = init();
+
+// Ensure badge is set on browser startup and extension install/update
+chrome.runtime.onStartup.addListener(() => initPromise.then(() => updateBadge()));
+chrome.runtime.onInstalled.addListener(() => initPromise.then(() => updateBadge()));
 
 // --- Settings Event Handlers ---
 bus.on('settings:allWindows', (newVal, oldVal, ctx) => updateBadge(ctx?.windowId));
 
 bus.on('settings:autoGrouping', async (newValue) => {
-  if (newValue) await withGroupingLock(() => applyAutoGroupingToAll());
+  if (newValue) await scheduleBulkGrouping();
 });
 
 bus.on('settings:customGrouping', async (newValue) => {
-  if (newValue) await withGroupingLock(() => applyAutoGroupingToAll());
+  if (newValue) await scheduleBulkGrouping();
 });
 
 bus.on('settings:customGroups', async () => {
   if (settings.customGrouping) {
-    await withGroupingLock(() => applyAutoGroupingToAll());
+    await scheduleBulkGrouping();
   }
 });
 
@@ -758,11 +830,11 @@ bus.on('tab:updated', async (tabId, changeInfo, tab) => {
   }
   if (changeInfo.status !== 'complete') return;
   if (shouldSkipUrl(tab.url)) return;
-  withGroupingLock(() => groupSingleTab(tab));
+  scheduleSingleTabGrouping(tab.id);
 });
 
 // --- Group Event Handlers ---
-bus.on('group:removed', (group) => removeGroupId(group.id));
+bus.on('group:removed', async (group) => { await removeGroupId(group.id); });
 
 // --- Wire Chrome events to bus ---
 chrome.tabs.onCreated.addListener((tab) => bus.emit('tab:created', tab));

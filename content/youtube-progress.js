@@ -6,7 +6,7 @@ if (window.location.hostname !== 'www.youtube.com') {
   throw new Error('Not www.youtube.com');
 }
 
-// Clean up any previous instance (handles extension reload)
+// Clean up any previous instance (handles re-injection on extension reload / sidebar reopen)
 if (window.__youtubeProgressCleanup) {
   window.__youtubeProgressCleanup();
 }
@@ -29,14 +29,31 @@ function getVideoProgress() {
   return { progress, videoId: getVideoId() };
 }
 
+function isContextValid() {
+  try {
+    return !!(chrome.runtime && chrome.runtime.id);
+  } catch {
+    return false;
+  }
+}
+
 function sendProgress() {
+  if (!isContextValid()) {
+    // Extension was reloaded — stop polling so we don't keep throwing
+    stopPolling();
+    return;
+  }
   const data = getVideoProgress();
   if (data && data.videoId) {
-    chrome.runtime.sendMessage({
-      type: 'youtubeProgress',
-      progress: data.progress,
-      videoId: data.videoId
-    }).catch(() => {});
+    try {
+      chrome.runtime.sendMessage({
+        type: 'youtubeProgress',
+        progress: data.progress,
+        videoId: data.videoId
+      }).catch(() => {});
+    } catch {
+      stopPolling();
+    }
   }
 }
 
@@ -56,45 +73,55 @@ function stopPolling() {
   }
 }
 
-// Listen for start/stop messages from background
-chrome.runtime.onMessage.addListener((message) => {
+function onMessage(message) {
   if (message.type === 'startYoutubePolling') {
     startPolling();
   } else if (message.type === 'stopYoutubePolling') {
     stopPolling();
   }
+}
+chrome.runtime.onMessage.addListener(onMessage);
+
+// Wrap pushState/replaceState only once per page lifetime — preserve originals
+// across re-injection so we don't stack wrappers.
+const histPatch = (window.__youtubeProgressHistPatch ||= {
+  origPush: history.pushState,
+  origReplace: history.replaceState,
+  current: null
 });
 
-// Handle YouTube SPA navigation
-const originalPushState = history.pushState;
-const originalReplaceState = history.replaceState;
-
 function onNavigation() {
-  if (isPolling) {
-    sendProgress();
-  }
+  if (isPolling) sendProgress();
 }
 
+histPatch.current = onNavigation;
 history.pushState = function(...args) {
-  originalPushState.apply(this, args);
-  onNavigation();
+  histPatch.origPush.apply(this, args);
+  if (histPatch.current) histPatch.current();
 };
-
 history.replaceState = function(...args) {
-  originalReplaceState.apply(this, args);
-  onNavigation();
+  histPatch.origReplace.apply(this, args);
+  if (histPatch.current) histPatch.current();
 };
 
 window.addEventListener('popstate', onNavigation);
 
-// Cleanup function for when script is re-injected
 window.__youtubeProgressCleanup = () => {
   stopPolling();
+  chrome.runtime.onMessage.removeListener(onMessage);
+  window.removeEventListener('popstate', onNavigation);
+  // Detach our nav handler from the shared history wrapper
+  if (histPatch.current === onNavigation) histPatch.current = null;
 };
 
 // Notify background that content script is ready and auto-start if told to
-chrome.runtime.sendMessage({ type: 'youtubeContentScriptReady' }, (response) => {
-  if (response && response.startPolling) {
-    startPolling();
-  }
-});
+try {
+  chrome.runtime.sendMessage({ type: 'youtubeContentScriptReady' }, (response) => {
+    if (chrome.runtime.lastError) return; // SW asleep / context gone
+    if (response && response.startPolling) {
+      startPolling();
+    }
+  });
+} catch {
+  // Context invalidated; nothing to do
+}

@@ -14,6 +14,8 @@ FEATURES:
 
 - Quick Actions - Right-click tabs to duplicate, close, or move to another group
 
+- Quick Navigation - Header buttons to scroll to the active tab or cycle through tabs currently playing audio (jumps to each audible tab in turn)
+
 - Collapse/Expand - Click group headers to collapse or expand. Use header buttons to collapse/expand all groups at once
 
 - Rename Groups - Double-click any group name to rename it inline
@@ -36,10 +38,14 @@ Works with Chrome and Brave browsers.
 
 ## Changelog
 
-### v1.6.0 (2026-02-12)
-- Add tab search with wildcard support (click magnifying glass icon)
-- Fix YouTube progress persistence across sidebar close/reopen
-- Fix content script reload handling for YouTube tabs
-
-### v1.5.0 (2026-02-11)
-- Add YouTube video progress bars in sidebar (opt-in, toggle in settings)
+### v1.7.0 (2026-05-07)
+- Add "scroll to playing tab" header button — cycles through tabs currently playing audio, activating each in turn so you can pause/mute it
+- Add "scroll to active tab" header button and persist sidebar collapse/expand state
+- Fix YouTube content script not being included in published package (progress bars now work after install)
+- Reduce render thrashing: sidebar now ignores tab-update events that don't affect what's drawn
+- Coalesce rapid grouping work (e.g. session restore) into a single bulk pass instead of dozens of serialized operations
+- Make group-tracking writes durable across service-worker suspension
+- Fix lost-write race in ghost-group expiry
+- Make YouTube content script idempotent on re-injection (no listener pile-up after extension reload)
+- Settings handlers no longer fire twice on save
+- Better error handling for "No SW" / "Extension context invalidated" during service-worker hibernation

@@ -1,5 +1,5 @@
 import { getColorHex } from './lib/colors.js';
-import { GHOST_COUNTDOWN_INTERVAL_MS, SIDEBAR_INIT_DELAY_MS } from './lib/constants.js';
+import { GHOST_COUNTDOWN_INTERVAL_MS } from './lib/constants.js';
 import { calculateTargetIndex, getDropPosition } from './lib/drag-position.js';
 import { GHOST_GROUP_SECONDS, createGhostEntry, filterExpiredGhosts, getGhostRemainingSeconds } from './lib/ghost.js';
 import { createSleepingGroupEntry, isValidSleepingGroup, canSleepGroup } from './lib/sleep.js';
@@ -14,10 +14,21 @@ const contextMenu = document.getElementById('context-menu');
 const moveToGroupSubmenu = document.getElementById('move-to-group-submenu');
 const ungroupOption = document.getElementById('ungroup-option');
 const scrollToActiveBtn = document.getElementById('scroll-to-active-btn');
+const scrollToPlayingBtn = document.getElementById('scroll-to-playing-btn');
 const sidebarHeader = document.querySelector('.sidebar-header');
 const searchBtn = document.getElementById('search-btn');
 const searchInput = document.getElementById('search-input');
 const searchClearBtn = document.getElementById('search-clear-btn');
+
+// Safe wrapper: sendMessage can reject with "No SW" / "Extension context
+// invalidated" during SW hibernation or extension reload. Swallow those.
+async function safeSendMessage(msg) {
+  try {
+    return await chrome.runtime.sendMessage(msg);
+  } catch {
+    return undefined;
+  }
+}
 
 // Search state
 let searchQuery = '';
@@ -45,7 +56,7 @@ async function loadSettings() {
 async function loadYoutubeProgress() {
   if (!youtubeProgressEnabled) return;
   try {
-    const response = await chrome.runtime.sendMessage({ type: 'getYoutubeProgress' });
+    const response = await safeSendMessage({ type: 'getYoutubeProgress' });
     if (response && response.progress) {
       for (const [tabId, data] of Object.entries(response.progress)) {
         youtubeProgress.set(parseInt(tabId), data);
@@ -166,6 +177,43 @@ settingsBtn.addEventListener('click', () => {
 scrollToActiveBtn.addEventListener('click', async () => {
   const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (activeTab) scrollToTab(activeTab.id);
+});
+
+// Scroll to playing tab button — cycles through audible tabs in tab-bar order
+let lastPlayingTabId = null;
+
+async function getAudibleTabs() {
+  const queryOptions = allWindows ? { audible: true } : { audible: true, currentWindow: true };
+  const tabs = await chrome.tabs.query(queryOptions);
+  return tabs.sort((a, b) => a.index - b.index);
+}
+
+async function updatePlayingButtonState() {
+  const audibleTabs = await getAudibleTabs();
+  scrollToPlayingBtn.classList.toggle('inactive', audibleTabs.length === 0);
+  const count = audibleTabs.length;
+  scrollToPlayingBtn.title = count === 0
+    ? 'No tabs are playing audio'
+    : count === 1
+      ? 'Scroll to playing tab'
+      : `Cycle through ${count} playing tabs`;
+}
+
+scrollToPlayingBtn.addEventListener('click', async () => {
+  const audibleTabs = await getAudibleTabs();
+  if (audibleTabs.length === 0) return;
+
+  const ids = audibleTabs.map(t => t.id);
+  const lastIdx = lastPlayingTabId !== null ? ids.indexOf(lastPlayingTabId) : -1;
+  const nextIdx = (lastIdx + 1) % ids.length;
+  const target = audibleTabs[nextIdx];
+  lastPlayingTabId = target.id;
+
+  if (allWindows && target.windowId !== undefined) {
+    try { await chrome.windows.update(target.windowId, { focused: true }); } catch {}
+  }
+  await chrome.tabs.update(target.id, { active: true });
+  scrollToTab(target.id);
 });
 
 // Context menu functions
@@ -477,8 +525,8 @@ async function sleepGroup(groupId, groupInfo) {
 
   const windowId = tabs[0].windowId;
 
-  const response = await chrome.runtime.sendMessage({ type: 'getGroupType', groupId });
-  const groupType = response.groupType;
+  const response = await safeSendMessage({ type: 'getGroupType', groupId });
+  const groupType = response?.groupType ?? 'none';
 
   const entry = createSleepingGroupEntry(groupInfo, tabs, windowId, groupType);
 
@@ -524,9 +572,9 @@ async function wakeGroup(sleepId) {
       // Restore group type tracking
       const restoredType = entry.groupType || (entry.isManual ? 'manual' : 'none');
       if (restoredType === 'manual') {
-        await chrome.runtime.sendMessage({ type: 'markManualGroup', groupId });
+        await safeSendMessage({ type: 'markManualGroup', groupId });
       } else if (restoredType === 'auto') {
-        await chrome.runtime.sendMessage({ type: 'markAutoGroup', groupId });
+        await safeSendMessage({ type: 'markAutoGroup', groupId });
       }
     } catch (e) {
       console.error('Failed to group woken tabs:', e);
@@ -799,7 +847,7 @@ function createTabElement(tab, groupInfo, onClose) {
                 title: ghost.title,
                 color: ghost.color
               });
-              await chrome.runtime.sendMessage({ type: 'markManualGroup', groupId: newGroupId });
+              await safeSendMessage({ type: 'markManualGroup', groupId: newGroupId });
               ghostGroups.delete(ghostTabId);
               saveGhostGroups();
             }
@@ -813,7 +861,7 @@ function createTabElement(tab, groupInfo, onClose) {
               if (tabsToGroup.length > 0) {
                 await chrome.tabs.group({ tabIds: tabsToGroup, groupId: groupIdNum });
               }
-              await chrome.runtime.sendMessage({ type: 'markManualGroup', groupId: groupIdNum });
+              await safeSendMessage({ type: 'markManualGroup', groupId: groupIdNum });
             }
           }
 
@@ -1178,7 +1226,7 @@ function createGroupHeader(groupInfo, isGhost, isUngrouped, ghostExpiresAt, tabs
           render('rename-ghost-group');
         } else if (typeof groupId === 'number') {
           await chrome.tabGroups.update(groupId, { title: newTitle });
-          await chrome.runtime.sendMessage({ type: 'markManualGroup', groupId });
+          await safeSendMessage({ type: 'markManualGroup', groupId });
           // Sync custom group name if this was a custom group
           if (currentTitle !== newTitle) {
             const stored = await chrome.storage.sync.get('settings');
@@ -1187,7 +1235,6 @@ function createGroupHeader(groupInfo, isGhost, isUngrouped, ghostExpiresAt, tabs
             if (customGroup) {
               customGroup.name = newTitle;
               await chrome.storage.sync.set({ settings: s });
-              chrome.runtime.sendMessage({ type: 'settingsUpdated', settings: s });
             }
           }
         }
@@ -1222,7 +1269,7 @@ function createGroupHeader(groupInfo, isGhost, isUngrouped, ghostExpiresAt, tabs
         const tabIds = groupTabs.map(t => t.id);
         if (tabIds.length > 0) {
           await chrome.tabs.ungroup(tabIds);
-          await chrome.runtime.sendMessage({ type: 'refreshAll' });
+          await safeSendMessage({ type: 'refreshAll' });
         }
       } catch (err) {
         console.error('Failed to release manual group:', err);
@@ -1664,8 +1711,8 @@ async function render(source = 'unknown', forceRender = false) {
   const groupTypes = new Map();
   await Promise.all(groupOrder.map(async (groupId) => {
     try {
-      const resp = await chrome.runtime.sendMessage({ type: 'getGroupType', groupId });
-      groupTypes.set(groupId, resp.groupType);
+      const resp = await safeSendMessage({ type: 'getGroupType', groupId });
+      groupTypes.set(groupId, resp?.groupType ?? 'none');
     } catch {
       groupTypes.set(groupId, 'none');
     }
@@ -1843,13 +1890,12 @@ async function render(source = 'unknown', forceRender = false) {
   await loadGhostGroups();
   await loadSleepingGroups();
   await loadYoutubeProgress();
-  // Notify background to apply auto-grouping (if enabled)
-  chrome.runtime.sendMessage({ type: 'sidebarOpened' });
-  // Small delay to let grouping complete before render
-  await new Promise(r => setTimeout(r, SIDEBAR_INIT_DELAY_MS));
+  // Notify background to apply auto-grouping (if enabled) and wait for completion
+  await safeSendMessage({ type: 'sidebarOpened' });
   // Initialize group memberships tracking
   await updateGroupMemberships();
   render('initial', true);
+  updatePlayingButtonState();
 })();
 
 // Listen for settings and sleeping groups changes
@@ -1892,7 +1938,7 @@ setInterval(async () => {
   const { validGhosts, hadExpired } = filterExpiredGhosts(ghostGroups);
   const expiredTabIds = [];
 
-  // Collect expired tab IDs before updating ghostGroups
+  // Collect expired tab IDs (relative to the live ghostGroups Map)
   for (const [tabId] of ghostGroups) {
     if (!validGhosts.has(tabId)) {
       expiredTabIds.push(tabId);
@@ -1909,7 +1955,9 @@ setInterval(async () => {
   }
 
   if (hadExpired) {
-    ghostGroups = validGhosts;
+    // Mutate the live map so any concurrent writes (e.g. tabs.onRemoved adding
+    // a new ghost between snapshot and now) aren't clobbered by reassignment.
+    for (const tabId of expiredTabIds) ghostGroups.delete(tabId);
     saveGhostGroups();
     // Scroll to the first expired tab after it moves to "Other"
     if (expiredTabIds.length > 0) {
@@ -2020,11 +2068,23 @@ chrome.tabs.onCreated.addListener(() => render('tabs.onCreated'));
 chrome.tabs.onRemoved.addListener(async (tabId) => {
   ghostGroups.delete(tabId);
   saveGhostGroups();
+  if (tabId === lastPlayingTabId) lastPlayingTabId = null;
   // Check for 2→1 group transitions before rendering
   await updateGroupMemberships();
   render('tabs.onRemoved');
+  updatePlayingButtonState();
 });
-chrome.tabs.onUpdated.addListener(() => render('tabs.onUpdated'));
+// Only re-render for changes the sidebar actually reflects
+const RENDER_RELEVANT_KEYS = new Set([
+  'title', 'url', 'favIconUrl', 'audible', 'mutedInfo',
+  'groupId', 'pinned', 'discarded', 'attention'
+]);
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  const keys = Object.keys(changeInfo);
+  const relevant = keys.some(k => RENDER_RELEVANT_KEYS.has(k));
+  if (relevant) render('tabs.onUpdated');
+  if ('audible' in changeInfo) updatePlayingButtonState();
+});
 chrome.tabs.onMoved.addListener(() => render('tabs.onMoved'));
 chrome.tabs.onActivated.addListener((activeInfo) => {
   pendingScrollToTabId = activeInfo.tabId;
