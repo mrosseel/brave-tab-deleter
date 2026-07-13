@@ -4,15 +4,23 @@ import { calculateTargetIndex, getDropPosition } from './lib/drag-position.js';
 import { GHOST_GROUP_SECONDS, createGhostEntry, filterExpiredGhosts, getGhostRemainingSeconds } from './lib/ghost.js';
 import { createSleepingGroupEntry, isValidSleepingGroup, canSleepGroup } from './lib/sleep.js';
 import { loadFromStorage, saveToStorage } from './lib/storage.js';
+import { getColorForLabel, loadWindowLabels } from './lib/window-labels.js';
 
 const tabListEl = document.getElementById('tab-list');
 const tabCountEl = document.getElementById('tab-count');
 const settingsBtn = document.getElementById('settings-btn');
+const closePanelBtn = document.getElementById('close-panel-btn');
 const collapseAllBtn = document.getElementById('collapse-all-btn');
 const expandAllBtn = document.getElementById('expand-all-btn');
 const contextMenu = document.getElementById('context-menu');
 const moveToGroupSubmenu = document.getElementById('move-to-group-submenu');
 const ungroupOption = document.getElementById('ungroup-option');
+const groupContextMenu = document.getElementById('group-context-menu');
+const moveGroupToWindowSubmenu = document.getElementById('move-group-to-window-submenu');
+const moveToWindowSubmenu = document.getElementById('move-to-window-submenu');
+const fusedContextMenu = document.getElementById('fused-context-menu');
+const moveFusedToWindowSubmenu = document.getElementById('move-fused-to-window-submenu');
+const mergeFusedOption = document.getElementById('merge-fused-option');
 const scrollToActiveBtn = document.getElementById('scroll-to-active-btn');
 const scrollToPlayingBtn = document.getElementById('scroll-to-playing-btn');
 const sidebarHeader = document.querySelector('.sidebar-header');
@@ -36,8 +44,84 @@ let collapsedBeforeSearch = new Set(); // Track which groups were collapsed befo
 
 // Settings state
 let allWindows = false;
+let fuseGroups = false;
 let otherGroupName = 'Other';
 let youtubeProgressEnabled = false;
+
+// Window-label registry (windowId -> "A"/"B"/...). Populated from session storage.
+let windowLabels = {};
+
+async function refreshWindowLabels() {
+  const state = await loadWindowLabels();
+  windowLabels = state.labels || {};
+}
+
+// Labels are pointless when only one window exists.
+function shouldShowWindowLabels() {
+  return allWindows && Object.keys(windowLabels).length >= 2;
+}
+
+// Add/update/remove the group-level window badge in the header, and toggle the
+// .has-window-badge class on the container so CSS hides per-tab badges inside.
+function syncGroupWindowBadge(groupEl, headerEl, tabs, isReal) {
+  const eligible = shouldShowWindowLabels() && isReal && tabs && tabs.length > 0;
+  const label = eligible ? windowLabels[tabs[0].windowId] : null;
+  const groupName = headerEl?.querySelector('.group-name');
+  const existing = groupName?.querySelector('.window-badge.group-window-badge');
+
+  if (!label) {
+    if (existing) existing.remove();
+    groupEl?.classList.remove('has-window-badge');
+    return;
+  }
+
+  const color = getColorForLabel(label);
+  if (existing) {
+    if (existing.textContent !== label) existing.textContent = label;
+    if (existing.dataset.color !== color) {
+      existing.style.backgroundColor = color;
+      existing.dataset.color = color;
+    }
+  } else if (groupName) {
+    const badge = document.createElement('span');
+    badge.className = 'window-badge group-window-badge';
+    badge.textContent = label;
+    badge.style.backgroundColor = color;
+    badge.dataset.color = color;
+    badge.title = `Window ${label}`;
+    groupName.appendChild(badge);
+  }
+  groupEl?.classList.add('has-window-badge');
+}
+
+function renderWindowBadge(tabEl, tab) {
+  const existing = tabEl.querySelector('.window-badge');
+  if (!shouldShowWindowLabels()) {
+    if (existing) existing.remove();
+    return;
+  }
+  const label = windowLabels[tab.windowId];
+  if (!label) {
+    if (existing) existing.remove();
+    return;
+  }
+  const color = getColorForLabel(label);
+  if (existing) {
+    if (existing.textContent !== label) existing.textContent = label;
+    if (existing.dataset.color !== color) {
+      existing.style.backgroundColor = color;
+      existing.dataset.color = color;
+    }
+    return;
+  }
+  const badge = document.createElement('span');
+  badge.className = 'window-badge';
+  badge.textContent = label;
+  badge.style.backgroundColor = color;
+  badge.dataset.color = color;
+  badge.title = `Window ${label}`;
+  tabEl.appendChild(badge);
+}
 
 // YouTube progress tracking: tabId -> { progress, videoId }
 const youtubeProgress = new Map();
@@ -47,6 +131,7 @@ async function loadSettings() {
   const stored = await chrome.storage.sync.get('settings');
   if (stored.settings) {
     allWindows = stored.settings.allWindows || false;
+    fuseGroups = stored.settings.fuseGroups || false;
     otherGroupName = stored.settings.otherGroupName || 'Other';
     youtubeProgressEnabled = stored.settings.youtubeProgress || false;
   }
@@ -173,6 +258,10 @@ settingsBtn.addEventListener('click', () => {
   window.location.href = 'settings.html';
 });
 
+closePanelBtn.addEventListener('click', () => {
+  window.close();
+});
+
 // Scroll to active tab button
 scrollToActiveBtn.addEventListener('click', async () => {
   const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -250,6 +339,7 @@ async function showContextMenu(e, tab) {
 
   // Populate move-to-group submenu
   await populateMoveToGroupSubmenu();
+  await populateMoveToWindowSubmenu();
 
   // Reset position and classes for measurement
   contextMenu.style.left = '0px';
@@ -396,6 +486,370 @@ async function handleContextMenuAction(action) {
   }
 }
 
+function hideGroupContextMenu() {
+  groupContextMenu.classList.remove('visible', 'expand-up');
+  const expanded = groupContextMenu.querySelector('.context-menu-has-submenu.expanded');
+  if (expanded) expanded.classList.remove('expanded');
+  groupContextMenu.dataset.groupId = '';
+}
+
+async function showGroupContextMenu(e, groupId) {
+  e.preventDefault();
+  e.stopPropagation();
+  hideContextMenu();
+
+  groupContextMenu.dataset.groupId = String(groupId);
+  await populateMoveGroupToWindowSubmenu(groupId);
+
+  groupContextMenu.style.left = '0px';
+  groupContextMenu.style.top = '0px';
+  groupContextMenu.classList.remove('expand-up');
+  groupContextMenu.classList.add('visible');
+
+  const menuRect = groupContextMenu.getBoundingClientRect();
+  let x = e.clientX;
+  if (x + menuRect.width > window.innerWidth) x = window.innerWidth - menuRect.width - 5;
+
+  let y = e.clientY;
+  const submenuItemCount = moveGroupToWindowSubmenu.children.length || 1;
+  const expandedHeight = menuRect.height + 30 + submenuItemCount * 32;
+  const spaceBelow = window.innerHeight - e.clientY;
+  if (spaceBelow < expandedHeight && e.clientY > spaceBelow) {
+    y = Math.max(5, e.clientY - menuRect.height);
+    groupContextMenu.classList.add('expand-up');
+  }
+  groupContextMenu.style.left = `${x}px`;
+  groupContextMenu.style.top = `${y}px`;
+}
+
+async function populateMoveGroupToWindowSubmenu(groupId) {
+  moveGroupToWindowSubmenu.innerHTML = '';
+
+  let sourceWindowId = null;
+  try {
+    const sourceGroup = await chrome.tabGroups.get(groupId);
+    sourceWindowId = sourceGroup.windowId;
+  } catch {}
+
+  const targets = Object.entries(windowLabels)
+    .map(([wid, label]) => ({ windowId: parseInt(wid), label }))
+    .filter((w) => w.windowId !== sourceWindowId)
+    .sort((a, b) => a.label.localeCompare(b.label));
+
+  if (targets.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'context-submenu-item';
+    empty.style.opacity = '0.6';
+    empty.textContent = 'No other windows';
+    moveGroupToWindowSubmenu.appendChild(empty);
+    return;
+  }
+
+  for (const { windowId, label } of targets) {
+    const item = document.createElement('div');
+    item.className = 'context-submenu-item';
+    item.innerHTML = `<span class="window-badge" style="background-color: ${getColorForLabel(label)}">${label}</span>Window ${label}`;
+    item.addEventListener('click', async () => {
+      hideGroupContextMenu();
+      await moveGroupToWindow(groupId, windowId);
+    });
+    moveGroupToWindowSubmenu.appendChild(item);
+  }
+}
+
+async function populateMoveToWindowSubmenu() {
+  moveToWindowSubmenu.innerHTML = '';
+
+  // Hide a target only when ALL selected tabs already live there (pure no-op).
+  // If the selection spans multiple windows, every window is a valid target.
+  const tabsInfo = await Promise.all(
+    contextMenuTabs.map((t) => chrome.tabs.get(t.id).catch(() => null))
+  );
+  const sourceWindowIds = new Set(tabsInfo.filter(Boolean).map((t) => t.windowId));
+  const targets = Object.entries(windowLabels)
+    .map(([wid, label]) => ({ windowId: parseInt(wid), label }))
+    .filter((w) => !(sourceWindowIds.size === 1 && sourceWindowIds.has(w.windowId)))
+    .sort((a, b) => a.label.localeCompare(b.label));
+
+  if (targets.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'context-submenu-item';
+    empty.style.opacity = '0.6';
+    empty.textContent = 'No other windows';
+    moveToWindowSubmenu.appendChild(empty);
+    return;
+  }
+
+  for (const { windowId, label } of targets) {
+    const item = document.createElement('div');
+    item.className = 'context-submenu-item';
+    item.innerHTML = `<span class="window-badge" style="background-color: ${getColorForLabel(label)}">${label}</span>Window ${label}`;
+    item.addEventListener('click', async () => {
+      const ids = contextMenuTabs.map((t) => t.id);
+      hideContextMenu();
+      await moveTabsToWindow(ids, windowId);
+    });
+    moveToWindowSubmenu.appendChild(item);
+  }
+}
+
+// Move tabs to a target window. Tabs in a source group are merged into a
+// same-titled group in the target window if one exists, else a new group is
+// created there with the source group's title and color. Ungrouped tabs land
+// ungrouped.
+async function moveTabsToWindow(tabIds, targetWindowId) {
+  try {
+    const tabs = await Promise.all(tabIds.map((id) => chrome.tabs.get(id)));
+    const targetGroups = await chrome.tabGroups.query({ windowId: targetWindowId });
+    const targetByTitle = new Map(
+      targetGroups.filter((g) => g.title).map((g) => [g.title, g])
+    );
+
+    // Bucket tabs by source group
+    const buckets = new Map(); // key: groupId or 'none' -> { tabIds, title, color }
+    for (const tab of tabs) {
+      if (tab.groupId === -1) {
+        if (!buckets.has('none')) buckets.set('none', { tabIds: [], title: null, color: null });
+        buckets.get('none').tabIds.push(tab.id);
+      } else {
+        const key = String(tab.groupId);
+        if (!buckets.has(key)) {
+          const g = await chrome.tabGroups.get(tab.groupId);
+          buckets.set(key, { tabIds: [], title: g.title || '', color: g.color });
+        }
+        buckets.get(key).tabIds.push(tab.id);
+      }
+    }
+
+    for (const [, bucket] of buckets) {
+      await chrome.tabs.move(bucket.tabIds, { windowId: targetWindowId, index: -1 });
+      if (!bucket.title) continue;
+      const existing = targetByTitle.get(bucket.title);
+      if (existing) {
+        await chrome.tabs.group({ tabIds: bucket.tabIds, groupId: existing.id });
+      } else {
+        const newGroupId = await chrome.tabs.group({ tabIds: bucket.tabIds });
+        await chrome.tabGroups.update(newGroupId, { title: bucket.title, color: bucket.color });
+        targetByTitle.set(bucket.title, { id: newGroupId, title: bucket.title, color: bucket.color });
+      }
+    }
+  } catch (err) {
+    console.error('Failed to move tabs to window:', err);
+  }
+}
+
+// Resolve a fused drop: route tabs into the most appropriate sub-group.
+// If any dragged tab is already in one of the fused sub-groups, treat it as a
+// no-op (just intra-fused reorder). Otherwise move tabs to the largest
+// sub-group's window and join it.
+async function handleFusedDrop(fusedTitle, tabIds, draggedTabsInfo) {
+  try {
+    const allGroups = await chrome.tabGroups.query({});
+    const subGroups = allGroups.filter((g) => g.title === fusedTitle);
+    if (subGroups.length === 0) return;
+
+    const sourceGroupIds = new Set(draggedTabsInfo.map((t) => t.groupId));
+    const alreadyMember = subGroups.find((g) => sourceGroupIds.has(g.id));
+    if (alreadyMember) return; // intra-fused reorder; no cross-window move needed
+
+    const counts = await Promise.all(
+      subGroups.map(async (g) => ({ g, count: (await chrome.tabs.query({ groupId: g.id })).length }))
+    );
+    counts.sort((a, b) => b.count - a.count);
+    const target = counts[0].g;
+
+    await chrome.tabs.move(tabIds, { windowId: target.windowId, index: -1 });
+    await chrome.tabs.group({ tabIds, groupId: target.id });
+  } catch (err) {
+    console.error('Failed to handle fused drop:', err);
+  }
+}
+
+async function moveGroupToWindow(groupId, targetWindowId) {
+  try {
+    const groupTabs = await chrome.tabs.query({ groupId });
+    if (groupTabs.length === 0) return;
+    const tabIds = groupTabs.map((t) => t.id);
+
+    const sourceGroup = await chrome.tabGroups.get(groupId);
+    const targetGroups = await chrome.tabGroups.query({ windowId: targetWindowId });
+    const collision = sourceGroup.title
+      ? targetGroups.find((g) => g.title === sourceGroup.title)
+      : null;
+
+    if (collision) {
+      await chrome.tabs.move(tabIds, { windowId: targetWindowId, index: -1 });
+      await chrome.tabs.group({ tabIds, groupId: collision.id });
+    } else {
+      await chrome.tabGroups.move(groupId, { windowId: targetWindowId, index: -1 });
+    }
+  } catch (err) {
+    console.error('Failed to move group to window:', err);
+  }
+}
+
+groupContextMenu.addEventListener('click', (e) => {
+  const item = e.target.closest('.context-menu-item');
+  if (!item) return;
+  if (item.classList.contains('context-menu-has-submenu')) {
+    item.classList.toggle('expanded');
+  }
+});
+
+function hideFusedContextMenu() {
+  fusedContextMenu.classList.remove('visible', 'expand-up');
+  const expanded = fusedContextMenu.querySelector('.context-menu-has-submenu.expanded');
+  if (expanded) expanded.classList.remove('expanded');
+  fusedContextMenu.dataset.fusedTitle = '';
+}
+
+async function showFusedContextMenu(e, title) {
+  e.preventDefault();
+  e.stopPropagation();
+  hideContextMenu();
+  hideGroupContextMenu();
+
+  fusedContextMenu.dataset.fusedTitle = title;
+
+  const allGroups = await chrome.tabGroups.query({});
+  const subGroups = allGroups.filter((g) => g.title === title);
+  const sourceWindowIds = new Set(subGroups.map((g) => g.windowId));
+
+  mergeFusedOption.style.display =
+    sourceWindowIds.size === 1 && subGroups.length >= 2 ? 'block' : 'none';
+
+  await populateMoveFusedToWindowSubmenu(title, sourceWindowIds);
+
+  fusedContextMenu.style.left = '0px';
+  fusedContextMenu.style.top = '0px';
+  fusedContextMenu.classList.remove('expand-up');
+  fusedContextMenu.classList.add('visible');
+
+  const menuRect = fusedContextMenu.getBoundingClientRect();
+  let x = e.clientX;
+  if (x + menuRect.width > window.innerWidth) x = window.innerWidth - menuRect.width - 5;
+
+  let y = e.clientY;
+  const submenuItemCount = moveFusedToWindowSubmenu.children.length || 1;
+  const expandedHeight = menuRect.height + 30 + submenuItemCount * 32;
+  const spaceBelow = window.innerHeight - e.clientY;
+  if (spaceBelow < expandedHeight && e.clientY > spaceBelow) {
+    y = Math.max(5, e.clientY - menuRect.height);
+    fusedContextMenu.classList.add('expand-up');
+  }
+  fusedContextMenu.style.left = `${x}px`;
+  fusedContextMenu.style.top = `${y}px`;
+}
+
+async function populateMoveFusedToWindowSubmenu(title, sourceWindowIds) {
+  moveFusedToWindowSubmenu.innerHTML = '';
+
+  const targets = Object.entries(windowLabels)
+    .map(([wid, label]) => ({ windowId: parseInt(wid), label }))
+    .filter((w) => !(sourceWindowIds.size === 1 && sourceWindowIds.has(w.windowId)))
+    .sort((a, b) => a.label.localeCompare(b.label));
+
+  if (targets.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'context-submenu-item';
+    empty.style.opacity = '0.6';
+    empty.textContent = 'No other windows';
+    moveFusedToWindowSubmenu.appendChild(empty);
+    return;
+  }
+
+  for (const { windowId, label } of targets) {
+    const item = document.createElement('div');
+    item.className = 'context-submenu-item';
+    item.innerHTML = `<span class="window-badge" style="background-color: ${getColorForLabel(label)}">${label}</span>Window ${label}`;
+    item.addEventListener('click', async () => {
+      hideFusedContextMenu();
+      await moveFusedToWindow(title, windowId);
+    });
+    moveFusedToWindowSubmenu.appendChild(item);
+  }
+}
+
+// Consolidate all sub-groups of a fused group into one Chrome tabGroup, using
+// the largest sub-group as the anchor.
+async function mergeFusedGroup(title) {
+  try {
+    const allGroups = await chrome.tabGroups.query({});
+    const subGroups = allGroups.filter((g) => g.title === title);
+    if (subGroups.length < 2) return;
+
+    const counts = await Promise.all(
+      subGroups.map(async (g) => ({ g, count: (await chrome.tabs.query({ groupId: g.id })).length }))
+    );
+    counts.sort((a, b) => b.count - a.count);
+    const anchor = counts[0].g;
+
+    const otherTabIds = [];
+    for (const { g } of counts.slice(1)) {
+      const tabs = await chrome.tabs.query({ groupId: g.id });
+      otherTabIds.push(...tabs.map((t) => t.id));
+    }
+    if (otherTabIds.length === 0) return;
+
+    await chrome.tabs.move(otherTabIds, { windowId: anchor.windowId, index: -1 });
+    await chrome.tabs.group({ tabIds: otherTabIds, groupId: anchor.id });
+  } catch (err) {
+    console.error('Failed to merge fused group:', err);
+  }
+}
+
+// Move every tab across every sub-group of a fused group into a single
+// destination group in the target window (merge into existing same-titled
+// group there, or create a new one).
+async function moveFusedToWindow(title, targetWindowId) {
+  try {
+    const allGroups = await chrome.tabGroups.query({});
+    const subGroups = allGroups.filter((g) => g.title === title);
+    if (subGroups.length === 0) return;
+
+    const tabArrays = await Promise.all(
+      subGroups.map((g) => chrome.tabs.query({ groupId: g.id }))
+    );
+    const allTabIds = tabArrays.flat().map((t) => t.id);
+    if (allTabIds.length === 0) return;
+
+    const targetGroups = await chrome.tabGroups.query({ windowId: targetWindowId });
+    const collision = targetGroups.find((g) => g.title === title);
+
+    if (collision) {
+      const collisionTabs = await chrome.tabs.query({ groupId: collision.id });
+      const collisionIds = new Set(collisionTabs.map((t) => t.id));
+      const moveIds = allTabIds.filter((id) => !collisionIds.has(id));
+      if (moveIds.length > 0) {
+        await chrome.tabs.move(moveIds, { windowId: targetWindowId, index: -1 });
+        await chrome.tabs.group({ tabIds: moveIds, groupId: collision.id });
+      }
+    } else {
+      const color = subGroups[0].color;
+      await chrome.tabs.move(allTabIds, { windowId: targetWindowId, index: -1 });
+      const newGroupId = await chrome.tabs.group({ tabIds: allTabIds });
+      await chrome.tabGroups.update(newGroupId, { title, color });
+    }
+  } catch (err) {
+    console.error('Failed to move fused group to window:', err);
+  }
+}
+
+fusedContextMenu.addEventListener('click', async (e) => {
+  const item = e.target.closest('.context-menu-item');
+  if (!item) return;
+  if (item.classList.contains('context-menu-has-submenu')) {
+    item.classList.toggle('expanded');
+    return;
+  }
+  const action = item.dataset.action;
+  const title = fusedContextMenu.dataset.fusedTitle;
+  if (action === 'merge-fused' && title) {
+    hideFusedContextMenu();
+    await mergeFusedGroup(title);
+  }
+});
+
 // Context menu event listeners
 contextMenu.addEventListener('click', (e) => {
   const item = e.target.closest('.context-menu-item');
@@ -419,13 +873,23 @@ document.addEventListener('click', (e) => {
   if (!contextMenu.contains(e.target)) {
     hideContextMenu();
   }
+  if (!groupContextMenu.contains(e.target)) {
+    hideGroupContextMenu();
+  }
+  if (!fusedContextMenu.contains(e.target)) {
+    hideFusedContextMenu();
+  }
   if (!e.target.closest('.tab-item') && !contextMenu.contains(e.target)) {
     clearSelection();
   }
 });
 
 // Hide context menu on scroll
-document.addEventListener('scroll', hideContextMenu);
+document.addEventListener('scroll', () => {
+  hideContextMenu();
+  hideGroupContextMenu();
+  hideFusedContextMenu();
+});
 
 // Escape clears selection and hides context menu
 document.addEventListener('keydown', (e) => {
@@ -586,8 +1050,11 @@ async function wakeGroup(sleepId) {
 
 // Update group memberships and detect 2→1 transitions to create ghost groups
 async function updateGroupMemberships() {
-  const tabs = await chrome.tabs.query({ currentWindow: true });
-  const groups = await chrome.tabGroups.query({ windowId: chrome.windows.WINDOW_ID_CURRENT });
+  const queryScope = allWindows ? {} : { currentWindow: true };
+  const tabs = await chrome.tabs.query(queryScope);
+  const groups = allWindows
+    ? await chrome.tabGroups.query({})
+    : await chrome.tabGroups.query({ windowId: chrome.windows.WINDOW_ID_CURRENT });
 
   // Build new membership map
   const newMemberships = new Map();
@@ -600,10 +1067,22 @@ async function updateGroupMemberships() {
     }
   }
 
+  // Under fusion, the unit of identity is the title — a 1-tab sub-group is
+  // still a valid member of the fused identity as long as a sibling sub-group
+  // with the same title exists elsewhere. Skip ghost creation in that case.
+  const hasFusedSibling = (title, excludeGroupId) => {
+    if (!fuseGroups || !allWindows || !title) return false;
+    for (const [gid, info] of newMemberships) {
+      if (gid !== excludeGroupId && info.title === title && info.tabs.size > 0) return true;
+    }
+    return false;
+  };
+
   // Check for 2→1 transitions (group that had 2+ now has 1)
   for (const [groupId, oldInfo] of groupMemberships) {
     const newInfo = newMemberships.get(groupId);
     if (oldInfo.tabs.size >= 2 && newInfo && newInfo.tabs.size === 1) {
+      if (hasFusedSibling(newInfo.title || oldInfo.title, groupId)) continue;
       // Group went from 2+ to 1 - create ghost for remaining tab
       const remainingTabId = [...newInfo.tabs][0];
       if (!ghostGroups.has(remainingTabId)) {
@@ -617,6 +1096,7 @@ async function updateGroupMemberships() {
   // Also check for tabs that were in a group that no longer exists
   for (const [groupId, oldInfo] of groupMemberships) {
     if (!newMemberships.has(groupId) && oldInfo.tabs.size >= 2) {
+      if (hasFusedSibling(oldInfo.title, groupId)) continue;
       // Group was destroyed - check if any of its tabs are now ungrouped
       for (const tabId of oldInfo.tabs) {
         const tab = tabs.find(t => t.id === tabId);
@@ -808,6 +1288,13 @@ function createTabElement(tab, groupInfo, onClose) {
           const anchorNextId = anchorNext?.dataset?.tabId ? parseInt(anchorNext.dataset.tabId) : null;
           const anchorPrevId = anchorPrev?.dataset?.tabId ? parseInt(anchorPrev.dataset.tabId) : null;
 
+          // Fused drop: cross-window move + join largest sub-group. Skip
+          // intra-window positional moves since they don't apply.
+          const isFusedTarget = typeof targetGroupId === 'string' && targetGroupId.startsWith('fused:');
+          if (isFusedTarget) {
+            await handleFusedDrop(targetGroupId.slice('fused:'.length), sortedIds, draggedTabs);
+            render('tab-drag-complete');
+          } else {
           // Move tabs one at a time, adjusting for index shifts
           for (const tabId of sortedIds) {
             const currentTab = await chrome.tabs.get(tabId);
@@ -866,6 +1353,7 @@ function createTabElement(tab, groupInfo, onClose) {
           }
 
           render('tab-drag-complete');
+          }
         } catch (err) {
           console.error('Failed to move tab(s):', err, 'targetGroupId:', targetGroupId, 'allTabIds:', allTabIds);
           // Revert primary to original position
@@ -961,6 +1449,7 @@ function createTabElement(tab, groupInfo, onClose) {
   div.appendChild(closeBtn);
   div.appendChild(faviconWrapper);
   div.appendChild(title);
+  renderWindowBadge(div, tab);
 
   // YouTube progress bar
   if (youtubeProgressEnabled && tab.url && tab.url.startsWith('https://www.youtube.com/watch')) {
@@ -1044,11 +1533,17 @@ function setupGroupDragHandlers(container, groupId, tabs, groupInfo) {
 
     if (draggedGroup && draggedGroupElement) {
       const movedToNewPosition = draggedGroupElement.nextSibling !== originalGroupNextSibling;
-      const numericGroupId = parseInt(draggedGroup.groupId);
-      const isRealGroup = !isNaN(numericGroupId) && numericGroupId > 0;
+      const idStr = String(draggedGroup.groupId);
+      const isFused = idStr.startsWith('fused:');
+      const numericGroupId = parseInt(idStr);
+      const isRealGroup = !isFused && !isNaN(numericGroupId) && numericGroupId > 0;
 
-      if (movedToNewPosition && isRealGroup) {
-        await commitGroupMove(numericGroupId);
+      if (movedToNewPosition) {
+        if (isFused) {
+          await commitFusedGroupMove(idStr.slice('fused:'.length));
+        } else if (isRealGroup) {
+          await commitGroupMove(numericGroupId);
+        }
       }
     }
 
@@ -1090,9 +1585,10 @@ async function commitGroupMove(numericGroupId) {
     const tabIds = sortedTabs.map(t => t.id);
 
     if (tabIds.length > 0) {
+      const windowId = sortedTabs[0].windowId;
       const currentIndex = sortedTabs[0].index;
-      const nextTabIndex = await getFirstTabIndexOfGroup(nextGroup);
-      const prevTabIndex = await getLastTabIndexOfGroup(prevGroup);
+      const nextTabIndex = await getFirstTabIndexOfGroup(nextGroup, windowId);
+      const prevTabIndex = await getLastTabIndexOfGroup(prevGroup, windowId);
 
       const targetIndex = calculateTargetIndex(currentIndex, nextTabIndex, prevTabIndex, tabIds.length);
 
@@ -1130,27 +1626,79 @@ async function commitGroupMove(numericGroupId) {
 }
 
 // Get first tab index of a group element
-async function getFirstTabIndexOfGroup(groupEl) {
+// Reorder each sub-group of a fused group within its own window relative to
+// the in-window neighbors visible in the sidebar.
+async function commitFusedGroupMove(fusedTitle) {
+  const nextEl = draggedGroupElement.nextElementSibling;
+  const prevEl = draggedGroupElement.previousElementSibling;
+
+  try {
+    const allGroups = await chrome.tabGroups.query({});
+    const subGroups = allGroups.filter((g) => g.title === fusedTitle);
+
+    for (const sub of subGroups) {
+      const subTabs = await chrome.tabs.query({ groupId: sub.id });
+      if (subTabs.length === 0) continue;
+      const sortedTabs = subTabs.sort((a, b) => a.index - b.index);
+      const tabIds = sortedTabs.map((t) => t.id);
+      const currentIndex = sortedTabs[0].index;
+      const nextTabIndex = await getFirstTabIndexOfGroup(nextEl, sub.windowId);
+      const prevTabIndex = await getLastTabIndexOfGroup(prevEl, sub.windowId);
+
+      // If neither anchor lives in this window, leave this sub-group untouched.
+      if (nextTabIndex === null && prevTabIndex === null) continue;
+
+      const targetIndex = calculateTargetIndex(currentIndex, nextTabIndex, prevTabIndex, tabIds.length);
+      if (targetIndex !== null) {
+        await chrome.tabs.move(tabIds, { index: targetIndex });
+        try {
+          await chrome.tabs.group({ tabIds, groupId: sub.id });
+        } catch {
+          // sub-group may have been dissolved during move; ignore
+        }
+      }
+    }
+
+    render('group-drag-complete');
+  } catch (err) {
+    console.error('Failed to move fused group:', err);
+  }
+}
+
+async function getFirstTabIndexOfGroup(groupEl, windowId = null) {
   if (!groupEl?.dataset?.groupId) return null;
   const groupTabs = groupEl.querySelectorAll('.tab-item');
-  if (groupTabs.length > 0) {
-    const tabId = parseInt(groupTabs[0].dataset.tabId);
-    const tab = await chrome.tabs.get(tabId);
-    return tab.index;
+  let minIndex = null;
+  for (const tabEl of groupTabs) {
+    const tabId = parseInt(tabEl.dataset.tabId);
+    if (isNaN(tabId)) continue;
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      if (windowId !== null && tab.windowId !== windowId) continue;
+      if (minIndex === null || tab.index < minIndex) minIndex = tab.index;
+    } catch {}
+    if (windowId === null) break; // legacy: just use the first
   }
-  return null;
+  return minIndex;
 }
 
 // Get last tab index of a group element
-async function getLastTabIndexOfGroup(groupEl) {
+async function getLastTabIndexOfGroup(groupEl, windowId = null) {
   if (!groupEl?.dataset?.groupId) return null;
   const groupTabs = groupEl.querySelectorAll('.tab-item');
-  if (groupTabs.length > 0) {
-    const tabId = parseInt(groupTabs[groupTabs.length - 1].dataset.tabId);
-    const tab = await chrome.tabs.get(tabId);
-    return tab.index;
+  let maxIndex = null;
+  const reversed = Array.from(groupTabs).reverse();
+  for (const tabEl of reversed) {
+    const tabId = parseInt(tabEl.dataset.tabId);
+    if (isNaN(tabId)) continue;
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      if (windowId !== null && tab.windowId !== windowId) continue;
+      if (maxIndex === null || tab.index > maxIndex) maxIndex = tab.index;
+    } catch {}
+    if (windowId === null) break; // legacy: just use the last
   }
-  return null;
+  return maxIndex;
 }
 
 // Create the header element for a group
@@ -1280,6 +1828,13 @@ function createGroupHeader(groupInfo, isGhost, isUngrouped, ghostExpiresAt, tabs
 
   header.appendChild(rightSection);
 
+  // Right-click on real groups → "Move group to window" menu
+  if (!isGhost && !isUngrouped && !isSleeping && typeof groupId === 'number') {
+    header.addEventListener('contextmenu', (e) => {
+      showGroupContextMenu(e, groupId);
+    });
+  }
+
   return header;
 }
 
@@ -1394,7 +1949,10 @@ function createTabsContainer(tabs, groupInfo, isGhost, isUngrouped, positionInde
   tabs.forEach(tab => {
     let onClose = null;
 
-    if (!isUngrouped && !isGhost && tabs.length === 2 && groupInfo) {
+    // Skip the eager 2→1 ghost when fusion is on — updateGroupMemberships
+    // makes the correct sibling-aware call after the close fires.
+    const skipEagerGhost = allWindows && fuseGroups;
+    if (!isUngrouped && !isGhost && tabs.length === 2 && groupInfo && !skipEagerGhost) {
       const otherTab = tabs.find(t => t.id !== tab.id);
       if (otherTab) {
         onClose = () => {
@@ -1517,6 +2075,8 @@ function createGroupElement(groupId, groupInfo, tabs, isUngrouped = false, isGho
   }
 
   container.appendChild(header);
+  const isReal = !isUngrouped && !isGhost && !isSleeping;
+  syncGroupWindowBadge(container, header, tabs, isReal);
   container.appendChild(tabsContainer);
 
   return container;
@@ -1528,7 +2088,196 @@ function getGroupKey(item) {
   if (item.type === 'ungrouped') return 'ungrouped';
   if (item.type === 'ghost') return `ghost-${item.tab.id}`;
   if (item.type === 'sleeping') return String(item.sleepId);
+  if (item.type === 'fused') return `fused:${item.title}`;
   return 'unknown';
+}
+
+// Combine real-group items that share a title into a single 'fused' item.
+function fuseRenderItems(items) {
+  const byTitle = new Map();
+  const out = [];
+  for (const item of items) {
+    if (item.type !== 'real') { out.push(item); continue; }
+    const title = item.groupInfo?.title || '';
+    if (!title) { out.push(item); continue; }
+    if (!byTitle.has(title)) byTitle.set(title, []);
+    byTitle.get(title).push(item);
+  }
+  for (const [title, members] of byTitle) {
+    if (members.length === 1) {
+      out.push(members[0]);
+      continue;
+    }
+    const allTabs = members.flatMap((m) => m.tabs);
+    out.push({
+      type: 'fused',
+      title,
+      members,
+      tabs: allTabs,
+      firstTabIndex: Math.min(...members.map((m) => m.firstTabIndex))
+    });
+  }
+  return out;
+}
+
+function formatFusedBreakdown(members) {
+  const parts = members
+    .map((m) => {
+      const wid = m.tabs[0]?.windowId;
+      const label = (wid !== undefined && windowLabels[wid]) || '?';
+      return { label, count: m.tabs.length };
+    })
+    .sort((a, b) => a.label.localeCompare(b.label))
+    .map((p) => `${p.label}:${p.count}`);
+  return parts.join(' ');
+}
+
+// Determine the single window label for a fused group, or null if it spans
+// more than one window.
+function fusedSingleWindowLabel(members) {
+  const wids = new Set(members.map((m) => m.tabs[0]?.windowId));
+  if (wids.size !== 1) return null;
+  const wid = [...wids][0];
+  return wid !== undefined ? windowLabels[wid] || null : null;
+}
+
+// Sync the fused group's header: when all sub-groups share one window, render
+// a single window badge in the group name + hide per-tab badges. Otherwise
+// show the per-window count breakdown and let per-tab badges through.
+function syncFusedHeader(container, headerEl, members) {
+  const breakdown = headerEl.querySelector('.fused-breakdown');
+  const groupName = headerEl.querySelector('.group-name');
+  const existingBadge = groupName?.querySelector('.window-badge.group-window-badge');
+
+  // When only one window exists, drop all labels entirely (no badge, no breakdown).
+  if (!shouldShowWindowLabels()) {
+    if (existingBadge) existingBadge.remove();
+    container.classList.add('has-window-badge'); // hides per-tab badges too
+    if (breakdown) breakdown.textContent = '';
+    return;
+  }
+
+  const singleLabel = fusedSingleWindowLabel(members);
+
+  if (singleLabel && groupName) {
+    const color = getColorForLabel(singleLabel);
+    if (existingBadge) {
+      if (existingBadge.textContent !== singleLabel) existingBadge.textContent = singleLabel;
+      if (existingBadge.dataset.color !== color) {
+        existingBadge.style.backgroundColor = color;
+        existingBadge.dataset.color = color;
+      }
+    } else {
+      const badge = document.createElement('span');
+      badge.className = 'window-badge group-window-badge';
+      badge.textContent = singleLabel;
+      badge.style.backgroundColor = color;
+      badge.dataset.color = color;
+      badge.title = `Window ${singleLabel}`;
+      groupName.appendChild(badge);
+    }
+    container.classList.add('has-window-badge');
+    if (breakdown) breakdown.textContent = '';
+    return;
+  }
+
+  if (existingBadge) existingBadge.remove();
+  container.classList.remove('has-window-badge');
+  if (breakdown) breakdown.textContent = formatFusedBreakdown(members);
+}
+
+function createFusedGroupElement(item) {
+  const container = document.createElement('div');
+  container.className = 'tab-group fused-group';
+  container.dataset.groupId = `fused:${item.title}`;
+  container.draggable = true;
+  const firstSubColor = item.members[0]?.groupInfo?.color || 'blue';
+  setupGroupDragHandlers(container, `fused:${item.title}`, item.tabs, { title: item.title, color: firstSubColor });
+
+  const header = document.createElement('div');
+  header.className = 'group-header';
+  const firstColor = item.members[0]?.groupInfo?.color;
+  header.style.borderLeftColor = firstColor ? getColorHex(firstColor) : '#888';
+
+  const collapseIcon = document.createElement('span');
+  collapseIcon.className = 'collapse-icon';
+  collapseIcon.textContent = '▼';
+
+  const groupName = document.createElement('span');
+  groupName.className = 'group-name';
+  groupName.textContent = item.title || 'Unnamed Group';
+
+  const breakdown = document.createElement('span');
+  breakdown.className = 'fused-breakdown';
+
+  const tabCount = document.createElement('span');
+  tabCount.className = 'tab-count';
+  tabCount.textContent = `(${item.tabs.length})`;
+
+  header.appendChild(collapseIcon);
+  header.appendChild(groupName);
+  header.appendChild(breakdown);
+  header.appendChild(tabCount);
+
+  syncFusedHeader(container, header, item.members);
+
+  const tabsContainer = createTabsContainer(
+    item.tabs,
+    { title: item.title, color: firstColor },
+    false,
+    false,
+    0
+  );
+
+  header.addEventListener('click', () => {
+    header.classList.toggle('collapsed');
+    tabsContainer.classList.toggle('collapsed');
+  });
+
+  header.addEventListener('contextmenu', (e) => {
+    showFusedContextMenu(e, item.title, item.members);
+  });
+
+  container.appendChild(header);
+  container.appendChild(tabsContainer);
+  return container;
+}
+
+function updateFusedGroup(groupEl, item) {
+  const headerEl = groupEl.querySelector(':scope > .group-header');
+  const tabsContainer = groupEl.querySelector(':scope > .group-tabs');
+  if (!headerEl) return;
+
+  const firstColor = item.members[0]?.groupInfo?.color;
+  const colorHex = firstColor ? getColorHex(firstColor) : '#888';
+  if (headerEl.style.borderLeftColor !== colorHex) {
+    headerEl.style.borderLeftColor = colorHex;
+  }
+
+  const nameEl = headerEl.querySelector('.group-name');
+  if (nameEl) {
+    const badge = nameEl.querySelector('.window-badge.group-window-badge');
+    const currentTitleText = badge ? nameEl.firstChild?.textContent : nameEl.textContent;
+    if (currentTitleText !== item.title) {
+      if (badge) {
+        nameEl.firstChild.textContent = item.title;
+      } else {
+        nameEl.textContent = item.title;
+      }
+    }
+  }
+
+  syncFusedHeader(groupEl, headerEl, item.members);
+
+  const tabCount = headerEl.querySelector('.tab-count');
+  if (tabCount) {
+    const newCount = `(${item.tabs.length})`;
+    if (tabCount.textContent !== newCount) tabCount.textContent = newCount;
+  }
+
+  if (tabsContainer) {
+    diffGroupTabs(tabsContainer, item.tabs, { title: item.title, color: firstColor }, false, false, 0);
+  }
 }
 
 // Patch an existing .tab-item element with new tab data
@@ -1576,6 +2325,8 @@ function updateTabElement(el, tab) {
   } else if (!tab.audible && existingAudio) {
     existingAudio.remove();
   }
+
+  renderWindowBadge(el, tab);
 }
 
 // Patch a group header in-place
@@ -1667,9 +2418,10 @@ function diffGroupTabs(tabsContainer, newTabs, groupInfo, isGhost, isUngrouped, 
     if (el) {
       updateTabElement(el, tab);
     } else {
-      // Build onClose for 2-tab groups
+      // Build onClose for 2-tab groups (skipped under fusion — updateGroupMemberships handles it)
       let onClose = null;
-      if (!isUngrouped && !isGhost && newTabs.length === 2 && groupInfo) {
+      const skipEagerGhost = allWindows && fuseGroups;
+      if (!isUngrouped && !isGhost && newTabs.length === 2 && groupInfo && !skipEagerGhost) {
         const otherTab = newTabs.find(t => t.id !== tab.id);
         if (otherTab) {
           onClose = () => {
@@ -1771,6 +2523,13 @@ async function render(source = 'unknown', forceRender = false) {
   // Sort by first tab index to match tab bar order
   renderItems.sort((a, b) => a.firstTabIndex - b.firstTabIndex);
 
+  // Fuse same-titled real groups when fusion is enabled
+  let processedItems = renderItems;
+  if (allWindows && fuseGroups) {
+    processedItems = fuseRenderItems(renderItems);
+    processedItems.sort((a, b) => a.firstTabIndex - b.firstTabIndex);
+  }
+
   // --- DOM diffing: patch existing groups in-place ---
 
   // Build map of existing group elements by data-group-id
@@ -1782,7 +2541,7 @@ async function render(source = 'unknown', forceRender = false) {
   const newGroupKeys = new Set();
   let prevGroupEl = null;
 
-  renderItems.forEach((item, index) => {
+  processedItems.forEach((item, index) => {
     const key = getGroupKey(item);
     newGroupKeys.add(key);
 
@@ -1795,6 +2554,7 @@ async function render(source = 'unknown', forceRender = false) {
 
       if (item.type === 'real') {
         updateGroupHeader(headerEl, item.groupInfo, item.tabs, false, null, false, false, item.groupType);
+        syncGroupWindowBadge(groupEl, headerEl, item.tabs, true);
         if (tabsContainer) {
           tabsContainer.classList.toggle('collapsed', !!item.groupInfo?.collapsed);
           diffGroupTabs(tabsContainer, item.tabs, item.groupInfo, false, false, index);
@@ -1802,6 +2562,7 @@ async function render(source = 'unknown', forceRender = false) {
       } else if (item.type === 'ungrouped') {
         const ungroupedInfo = { title: otherGroupName, color: 'grey', collapsed: otherCollapsed };
         updateGroupHeader(headerEl, ungroupedInfo, item.tabs, false, null, true, false, 'none');
+        syncGroupWindowBadge(groupEl, headerEl, item.tabs, false);
         if (tabsContainer) {
           tabsContainer.classList.toggle('collapsed', otherCollapsed);
           diffGroupTabs(tabsContainer, item.tabs, null, false, true, index);
@@ -1809,12 +2570,16 @@ async function render(source = 'unknown', forceRender = false) {
       } else if (item.type === 'ghost') {
         const fakeGroupInfo = { title: item.ghost.title, color: item.ghost.color };
         updateGroupHeader(headerEl, fakeGroupInfo, [item.tab], true, item.ghost.expiresAt, false, false, 'none');
+        syncGroupWindowBadge(groupEl, headerEl, [item.tab], false);
         if (tabsContainer) {
           diffGroupTabs(tabsContainer, [item.tab], fakeGroupInfo, true, false, index);
         }
+      } else if (item.type === 'fused') {
+        updateFusedGroup(groupEl, item);
       } else if (item.type === 'sleeping') {
         const sleepInfo = { title: item.entry.title, color: item.entry.color };
         updateGroupHeader(headerEl, sleepInfo, item.entry.tabs, false, null, false, true, 'none');
+        syncGroupWindowBadge(groupEl, headerEl, item.entry.tabs, false);
         // Sleeping tabs are static previews — rebuild if tab count changed
         if (tabsContainer) {
           const currentCount = tabsContainer.querySelectorAll('.tab-item').length;
@@ -1837,6 +2602,8 @@ async function render(source = 'unknown', forceRender = false) {
       } else if (item.type === 'sleeping') {
         const sleepInfo = { title: item.entry.title, color: item.entry.color, collapsed: true };
         groupEl = createGroupElement(item.sleepId, sleepInfo, item.entry.tabs, false, false, null, index, true, item.sleepId);
+      } else if (item.type === 'fused') {
+        groupEl = createFusedGroupElement(item);
       }
     }
 
@@ -1887,6 +2654,7 @@ async function render(source = 'unknown', forceRender = false) {
 // Initialize: load settings, ghost groups, sleeping groups, trigger auto-grouping, then render
 (async () => {
   await loadSettings();
+  await refreshWindowLabels();
   await loadGhostGroups();
   await loadSleepingGroups();
   await loadYoutubeProgress();
@@ -1905,6 +2673,10 @@ chrome.storage.onChanged.addListener(async (changes, area) => {
     let needsRender = false;
     if (newSettings && newSettings.allWindows !== allWindows) {
       allWindows = newSettings.allWindows || false;
+      needsRender = true;
+    }
+    if (newSettings && newSettings.fuseGroups !== fuseGroups) {
+      fuseGroups = newSettings.fuseGroups || false;
       needsRender = true;
     }
     if (newSettings && newSettings.otherGroupName !== otherGroupName) {
@@ -1928,6 +2700,11 @@ chrome.storage.onChanged.addListener(async (changes, area) => {
   if (area === 'local' && changes.sleepingGroups) {
     await loadSleepingGroups();
     render('sleeping-groups-changed', true);
+  }
+  // Refresh window labels when background updates them
+  if (area === 'session' && changes.windowLabels) {
+    await refreshWindowLabels();
+    if (allWindows) render('window-labels-changed', true);
   }
 });
 
@@ -2086,6 +2863,8 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if ('audible' in changeInfo) updatePlayingButtonState();
 });
 chrome.tabs.onMoved.addListener(() => render('tabs.onMoved'));
+chrome.tabs.onAttached.addListener(() => render('tabs.onAttached'));
+chrome.tabs.onDetached.addListener(() => render('tabs.onDetached'));
 chrome.tabs.onActivated.addListener((activeInfo) => {
   pendingScrollToTabId = activeInfo.tabId;
   render('tabs.onActivated');

@@ -10,6 +10,12 @@
   <header class="sidebar-header">
     <div class="header-normal" id="header-normal">
       <div class="header-left">
+        <button class="header-btn" id="close-panel-btn" title="Close sidebar">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M18 6L6 18"></path>
+            <path d="M6 6l12 12"></path>
+          </svg>
+        </button>
         <span class="header-title">Tabs</span>
         <span id="tab-count" class="header-count"></span>
       </div>
@@ -81,7 +87,31 @@
       <span class="submenu-arrow">▶</span>
       <div class="context-submenu" id="move-to-group-submenu"></div>
     </div>
+    <div class="context-menu-item context-menu-has-submenu" data-action="move-to-window" id="move-to-window-option">
+      Move to window
+      <span class="submenu-arrow">▶</span>
+      <div class="context-submenu" id="move-to-window-submenu"></div>
+    </div>
     <div class="context-menu-item" data-action="ungroup" id="ungroup-option">Ungroup</div>
+  </div>
+
+  <!-- Group header context menu -->
+  <div id="group-context-menu" class="context-menu">
+    <div class="context-menu-item context-menu-has-submenu" data-action="move-group-to-window">
+      Move group to window
+      <span class="submenu-arrow">▶</span>
+      <div class="context-submenu" id="move-group-to-window-submenu"></div>
+    </div>
+  </div>
+
+  <!-- Fused group header context menu -->
+  <div id="fused-context-menu" class="context-menu">
+    <div class="context-menu-item" data-action="merge-fused" id="merge-fused-option">Merge into one group</div>
+    <div class="context-menu-item context-menu-has-submenu" data-action="move-fused-to-window">
+      Move all to window
+      <span class="submenu-arrow">▶</span>
+      <div class="context-submenu" id="move-fused-to-window-submenu"></div>
+    </div>
   </div>
 
   <script src="dist/sidebar.js"></script>

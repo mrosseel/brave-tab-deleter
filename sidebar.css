@@ -51,6 +51,8 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .header-search {
@@ -90,6 +92,11 @@ body {
   display: flex;
   align-items: center;
   gap: 6px;
+  flex-shrink: 0;
+}
+
+#close-panel-btn {
+  flex-shrink: 0;
 }
 
 .header-title {
@@ -108,6 +115,8 @@ body {
   display: flex;
   align-items: center;
   gap: 4px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .header-btn {
@@ -334,6 +343,35 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.window-badge {
+  flex-shrink: 0;
+  margin-left: 6px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.2;
+  color: #fff;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+
+.tab-group.has-window-badge .tab-item .window-badge {
+  display: none;
+}
+
+.context-submenu-item .window-badge {
+  margin-left: 0;
+  margin-right: 8px;
+}
+
+.fused-breakdown {
+  margin-left: 8px;
+  font-size: 11px;
+  opacity: 0.7;
+  font-family: monospace;
 }
 
 /* Drag and drop styles */

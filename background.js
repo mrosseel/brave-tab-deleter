@@ -15,6 +15,7 @@ import {
 } from './lib/group-tracking.js';
 import { DEFAULT_SETTINGS } from './lib/settings-defaults.js';
 import { bus, emitSettingsChanges } from './lib/events.js';
+import { ensureLabelsForWindows, releaseLabelForWindow } from './lib/window-labels.js';
 
 console.log('=== BACKGROUND.JS VERSION 11 LOADED ===');
 
@@ -372,6 +373,33 @@ async function findGroupByTitleAndColor(windowId, title, color) {
   return groups.find(g => g.title === title && g.color === color);
 }
 
+// Find any group (regardless of how it was created) in another window that
+// already contains a tab with this domain. Used as a fusion-wide fallback so
+// new same-domain tabs in other windows can adopt the existing group's name.
+async function findGroupContainingDomainAnyWindow(domain, excludeWindowId) {
+  const windows = await chrome.windows.getAll({ windowTypes: ['normal'] });
+  for (const win of windows) {
+    if (win.id === excludeWindowId) continue;
+    const groups = await chrome.tabGroups.query({ windowId: win.id });
+    for (const group of groups) {
+      const tabs = await chrome.tabs.query({ groupId: group.id });
+      if (tabs.some((t) => getDomain(t.url) === domain)) return group;
+    }
+  }
+  return null;
+}
+
+// Find an auto-created group for this domain in any window other than excludeWindowId.
+async function findAutoGroupForDomainAnyWindow(domain, excludeWindowId) {
+  const windows = await chrome.windows.getAll({ windowTypes: ['normal'] });
+  for (const win of windows) {
+    if (win.id === excludeWindowId) continue;
+    const group = await findAutoGroupForDomain(win.id, domain);
+    if (group) return group;
+  }
+  return null;
+}
+
 // Find existing auto-created group for domain (by title, then by tab content)
 async function findAutoGroupForDomain(windowId, domain) {
   const expectedTitle = getShortName(domain).toLowerCase();
@@ -475,6 +503,18 @@ async function groupSingleTab(tab) {
       return;
     }
 
+    // Fusion: if a sibling auto-group exists in another window, create a
+    // matching single-tab group here so the fused view links them.
+    if (settings.allWindows && settings.fuseGroups) {
+      const sibling = await findAutoGroupForDomainAnyWindow(domain, currentTab.windowId);
+      if (sibling) {
+        const groupId = await chrome.tabs.group({ tabIds: currentTab.id });
+        await chrome.tabGroups.update(groupId, { title: sibling.title, color: sibling.color });
+        await markAsAutoGroup(groupId);
+        return;
+      }
+    }
+
     // No existing auto group - check if we can create one (2+ tabs with same domain)
     // Include ungrouped tabs and tabs in non-manual groups with same domain
     const allTabs = await chrome.tabs.query({ windowId: currentTab.windowId });
@@ -530,6 +570,27 @@ async function groupSingleTab(tab) {
     // Re-evaluate the group status (might become valid auto again)
     if (otherTabs.length >= 2) {
       await checkAndUpdateGroupStatus(groupId);
+    }
+  }
+
+  // 4. Fusion-wide fallback: if the tab is still ungrouped and some group in
+  // another window already contains a tab with this domain (manual, renamed,
+  // or custom-without-pattern), mirror that group's title+color here so the
+  // fused view picks them up together.
+  if (settings.allWindows && settings.fuseGroups) {
+    let latest;
+    try { latest = await chrome.tabs.get(currentTab.id); } catch { return; }
+    if (latest.groupId !== -1) return;
+
+    const otherGroup = await findGroupContainingDomainAnyWindow(domain, latest.windowId);
+    if (!otherGroup) return;
+
+    const existingHere = await findGroupByTitleAndColor(latest.windowId, otherGroup.title, otherGroup.color);
+    if (existingHere) {
+      await chrome.tabs.group({ tabIds: latest.id, groupId: existingHere.id });
+    } else {
+      const newGroupId = await chrome.tabs.group({ tabIds: latest.id });
+      await chrome.tabGroups.update(newGroupId, { title: otherGroup.title, color: otherGroup.color });
     }
   }
 }
@@ -760,6 +821,11 @@ async function recoverGroups() {
   }
 }
 
+async function seedWindowLabels() {
+  const windows = await chrome.windows.getAll({ windowTypes: ['normal'] });
+  await ensureLabelsForWindows(windows.map((w) => w.id));
+}
+
 // Initial setup
 async function init() {
   await loadSettings();
@@ -767,6 +833,7 @@ async function init() {
   await loadManualGroupIds();
   await loadYoutubeProgress();
   await loadSidebarOpen();
+  await seedWindowLabels();
   updateBadge();
   await recoverGroups();
 }
@@ -842,3 +909,12 @@ chrome.tabs.onRemoved.addListener((tabId, removeInfo) => bus.emit('tab:removed',
 chrome.tabs.onActivated.addListener((info) => bus.emit('tab:activated', info));
 chrome.tabs.onUpdated.addListener((id, info, tab) => bus.emit('tab:updated', id, info, tab));
 chrome.tabGroups.onRemoved.addListener((group) => bus.emit('group:removed', group));
+
+chrome.windows.onCreated.addListener(async (win) => {
+  if (win.type !== 'normal') return;
+  await ensureLabelsForWindows([win.id]);
+}, { windowTypes: ['normal'] });
+
+chrome.windows.onRemoved.addListener(async (windowId) => {
+  await releaseLabelForWindow(windowId);
+});

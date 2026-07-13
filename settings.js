@@ -9,6 +9,7 @@ let selectedColor = 'blue';
 // DOM Elements
 const backBtn = document.getElementById('back-btn');
 const allWindowsToggle = document.getElementById('all-windows');
+const fuseGroupsToggle = document.getElementById('fuse-groups');
 const autoGroupingToggle = document.getElementById('auto-grouping');
 const autoOrderingToggle = document.getElementById('auto-ordering');
 const autoOrderingSeconds = document.getElementById('auto-ordering-seconds');
@@ -43,6 +44,7 @@ async function saveSettings() {
 // Update UI with current settings
 async function updateUI() {
   allWindowsToggle.checked = settings.allWindows;
+  fuseGroupsToggle.checked = settings.fuseGroups;
   autoGroupingToggle.checked = settings.autoGrouping;
   autoOrderingToggle.checked = settings.autoOrdering;
   autoOrderingSeconds.value = settings.autoOrderingSeconds;
@@ -212,6 +214,11 @@ backBtn.addEventListener('click', () => {
 
 allWindowsToggle.addEventListener('change', () => {
   settings.allWindows = allWindowsToggle.checked;
+  saveSettings();
+});
+
+fuseGroupsToggle.addEventListener('change', () => {
+  settings.fuseGroups = fuseGroupsToggle.checked;
   saveSettings();
 });
 
