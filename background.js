@@ -17,7 +17,7 @@ import { DEFAULT_SETTINGS } from './lib/settings-defaults.js';
 import { bus, emitSettingsChanges } from './lib/events.js';
 import { ensureLabelsForWindows, releaseLabelForWindow } from './lib/window-labels.js';
 
-console.log('=== BACKGROUND.JS VERSION 11 LOADED ===');
+console.log('=== BACKGROUND.JS VERSION 13 LOADED ===');
 
 // Track sidebar state per window
 const sidebarOpen = new Map();
@@ -172,19 +172,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     scheduleBulkGrouping()
       .catch(err => console.error('[bg] sidebarOpened bulk failed:', err))
       .finally(() => sendResponse({ done: true }));
-    // Start YouTube polling for this window
-    if (sender.tab?.windowId) {
-      sidebarOpen.set(sender.tab.windowId, true);
+    // Start YouTube polling. Wait for init so settings/sidebar state are loaded.
+    initPromise.then(async () => {
+      const windowId = sender.tab?.windowId ?? (await chrome.windows.getCurrent()).id;
+      sidebarOpen.set(windowId, true);
       saveSidebarOpen();
-      sendYoutubePollingControl(sender.tab.windowId, true);
-    } else {
-      // Fallback: get current window
-      chrome.windows.getCurrent().then(win => {
-        sidebarOpen.set(win.id, true);
-        saveSidebarOpen();
-        sendYoutubePollingControl(win.id, true);
-      });
-    }
+      startYoutubePolling(windowId);
+    });
     return true; // Keep message channel open for async response
   } else if (message.type === 'refreshAll') {
     scheduleBulkGrouping().catch(err => console.error('[bg] refreshAll failed:', err));
@@ -209,7 +203,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     markAsAutoGroup(message.groupId).then(() => sendResponse({ success: true }));
     return true;
   } else if (message.type === 'youtubeProgress') {
-    if (sender.tab && settings.youtubeProgress) {
+    // A progress poll often wakes the service worker, so wait for init before
+    // reading settings — otherwise the update is dropped against defaults.
+    initPromise.then(() => {
+      if (!sender.tab || !settings.youtubeProgress) return;
       youtubeProgress.set(sender.tab.id, {
         progress: message.progress,
         videoId: message.videoId
@@ -222,15 +219,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         progress: message.progress,
         videoId: message.videoId
       }).catch(() => {});
-    }
+    });
   } else if (message.type === 'getYoutubeProgress') {
-    sendResponse({ progress: Object.fromEntries(youtubeProgress) });
+    initPromise.then(() => sendResponse({ progress: Object.fromEntries(youtubeProgress) }));
     return true;
   } else if (message.type === 'youtubeContentScriptReady') {
     if (sender.tab) {
       const windowId = sender.tab.windowId;
-      const shouldPoll = !!(sidebarOpen.get(windowId) && settings.youtubeProgress);
-      sendResponse({ startPolling: shouldPoll });
+      initPromise.then(() => sendResponse({ startPolling: shouldPollYoutube(windowId) }));
       return true;
     }
   }
@@ -247,11 +243,52 @@ chrome.storage.onChanged.addListener(async (changes, areaName) => {
     if (oldSettings.youtubeProgress !== settings.youtubeProgress) {
       const windows = await chrome.windows.getAll({ windowTypes: ['normal'] });
       for (const win of windows) {
-        sendYoutubePollingControl(win.id, settings.youtubeProgress);
+        sendYoutubePollingControl(win.id, shouldPollYoutube(win.id));
       }
     }
   }
 });
+
+// Is any sidebar open? In all-windows mode a single sidebar renders tabs from
+// every window, so one open sidebar is enough to keep every window polling.
+function anySidebarOpen() {
+  for (const open of sidebarOpen.values()) {
+    if (open) return true;
+  }
+  return false;
+}
+
+// Should YouTube tabs in this window be polling right now?
+function shouldPollYoutube(windowId) {
+  if (!settings.youtubeProgress) return false;
+  return settings.allWindows ? anySidebarOpen() : !!sidebarOpen.get(windowId);
+}
+
+// Start polling for the windows this sidebar covers.
+async function startYoutubePolling(windowId) {
+  if (!settings.allWindows) {
+    await sendYoutubePollingControl(windowId, true);
+    return;
+  }
+  const windows = await chrome.windows.getAll({ windowTypes: ['normal'] });
+  for (const win of windows) {
+    await sendYoutubePollingControl(win.id, true);
+  }
+}
+
+// Stop polling now that this window's sidebar closed. In all-windows mode a
+// remaining sidebar elsewhere still needs the data, so only stop when none left.
+async function stopYoutubePolling(windowId) {
+  if (settings.allWindows) {
+    if (anySidebarOpen()) return;
+    const windows = await chrome.windows.getAll({ windowTypes: ['normal'] });
+    for (const win of windows) {
+      await sendYoutubePollingControl(win.id, false);
+    }
+    return;
+  }
+  await sendYoutubePollingControl(windowId, false);
+}
 
 // Send YouTube polling control to all YouTube tabs in a window
 async function sendYoutubePollingControl(windowId, start) {
@@ -290,6 +327,7 @@ chrome.action.onClicked.addListener(async (tab) => {
   const isOpen = sidebarOpen.get(windowId) || false;
 
   if (isOpen) {
+    await initPromise;
     await chrome.storage.session.remove('ghostGroups');
     // Close sidebar for this window only by disabling/re-enabling for this tab
     await chrome.sidePanel.setOptions({ tabId: tab.id, enabled: false });
@@ -297,13 +335,16 @@ chrome.action.onClicked.addListener(async (tab) => {
     sidebarOpen.set(windowId, false);
     saveSidebarOpen();
     // Stop YouTube polling
-    sendYoutubePollingControl(windowId, false);
+    stopYoutubePolling(windowId);
   } else {
+    // Must be the first await in this handler: sidePanel.open() is only allowed
+    // while the click's user gesture is still active.
     await chrome.sidePanel.open({ windowId });
+    await initPromise;
     sidebarOpen.set(windowId, true);
     saveSidebarOpen();
     // Start YouTube polling
-    sendYoutubePollingControl(windowId, true);
+    startYoutubePolling(windowId);
   }
 });
 

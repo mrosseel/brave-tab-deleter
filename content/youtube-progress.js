@@ -114,14 +114,29 @@ window.__youtubeProgressCleanup = () => {
   if (histPatch.current === onNavigation) histPatch.current = null;
 };
 
-// Notify background that content script is ready and auto-start if told to
-try {
-  chrome.runtime.sendMessage({ type: 'youtubeContentScriptReady' }, (response) => {
-    if (chrome.runtime.lastError) return; // SW asleep / context gone
-    if (response && response.startPolling) {
-      startPolling();
-    }
-  });
-} catch {
-  // Context invalidated; nothing to do
+// Notify background that content script is ready and auto-start if told to.
+// The service worker may be starting up (or asleep) when we first ask, so retry
+// a few times rather than silently never polling.
+const READY_RETRIES = 3;
+const READY_RETRY_MS = 1000;
+
+function announceReady(attempt = 0) {
+  if (!isContextValid()) return;
+  try {
+    chrome.runtime.sendMessage({ type: 'youtubeContentScriptReady' }, (response) => {
+      if (chrome.runtime.lastError || !response) {
+        if (attempt < READY_RETRIES) {
+          setTimeout(() => announceReady(attempt + 1), READY_RETRY_MS * (attempt + 1));
+        }
+        return;
+      }
+      if (response.startPolling) {
+        startPolling();
+      }
+    });
+  } catch {
+    // Context invalidated; nothing to do
+  }
 }
+
+announceReady();
