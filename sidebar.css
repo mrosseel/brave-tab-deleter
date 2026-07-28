@@ -14,6 +14,7 @@
   --close-btn-hover: #cc0000;
   --active-tab-bg: #e0e7ff;
   --selected-tab-bg: #d0d8f0;
+  --active-accent: #4f46e5;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -27,6 +28,7 @@
     --close-btn-hover: #ff4444;
     --active-tab-bg: #2d3a5a;
     --selected-tab-bg: #364470;
+    --active-accent: #818cf8;
   }
 }
 
@@ -288,7 +290,13 @@ body {
 }
 
 .tab-item.active {
-  background-color: var(--active-tab-bg);
+  background-color: color-mix(in srgb, var(--active-accent) 22%, var(--bg-color));
+  box-shadow: inset 4px 0 0 var(--active-accent);
+}
+
+.tab-item.active .tab-title {
+  font-weight: 600;
+  color: var(--text-color);
 }
 
 .tab-item.selected {

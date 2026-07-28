@@ -126,6 +126,16 @@ function renderWindowBadge(tabEl, tab) {
 // YouTube progress tracking: tabId -> { progress, videoId }
 const youtubeProgress = new Map();
 
+// Apply a custom active-tab accent color, or clear it to fall back to the
+// theme default defined in sidebar.css.
+function applyActiveHighlight(color) {
+  if (color) {
+    document.documentElement.style.setProperty('--active-accent', color);
+  } else {
+    document.documentElement.style.removeProperty('--active-accent');
+  }
+}
+
 // Load settings from storage
 async function loadSettings() {
   const stored = await chrome.storage.sync.get('settings');
@@ -134,6 +144,7 @@ async function loadSettings() {
     fuseGroups = stored.settings.fuseGroups || false;
     otherGroupName = stored.settings.otherGroupName || 'Other';
     youtubeProgressEnabled = stored.settings.youtubeProgress || false;
+    applyActiveHighlight(stored.settings.activeHighlightColor || '');
   }
 }
 
@@ -1115,8 +1126,25 @@ async function updateGroupMemberships() {
 // Track render calls
 let renderCount = 0;
 
-// Pending tab ID to scroll to after render completes
+// Pending tab ID to scroll to after render completes (one-shot).
 let pendingScrollToTabId = null;
+
+// Active tab to keep scrolled into view. Switching tabs fires a burst of async
+// renders (activation, then onUpdated for title/favicon/audio as the tab loads);
+// keeping this set for a short window stops those follow-up renders from
+// restoring the old scroll position and snapping away from the active tab.
+let stickyScrollTabId = null;
+let stickyScrollTimer = null;
+const STICKY_SCROLL_MS = 500;
+
+function setStickyScroll(tabId) {
+  stickyScrollTabId = tabId;
+  if (stickyScrollTimer !== null) clearTimeout(stickyScrollTimer);
+  stickyScrollTimer = setTimeout(() => {
+    stickyScrollTabId = null;
+    stickyScrollTimer = null;
+  }, STICKY_SCROLL_MS);
+}
 
 
 
@@ -2636,11 +2664,13 @@ async function render(source = 'unknown', forceRender = false) {
     }
   }
 
-  // Scroll to focused tab if pending (takes priority over scroll position restore)
-  if (pendingScrollToTabId !== null) {
-    const tabIdToScroll = pendingScrollToTabId;
+  // Scroll to focused tab if pending (takes priority over scroll position
+  // restore). The sticky target keeps the active tab in view across the burst
+  // of renders that follows a tab switch.
+  const scrollTarget = pendingScrollToTabId ?? stickyScrollTabId;
+  if (scrollTarget !== null) {
     pendingScrollToTabId = null;
-    scrollToTab(tabIdToScroll);
+    scrollToTab(scrollTarget);
   } else {
     window.scrollTo(0, scrollTop);
   }
@@ -2682,6 +2712,9 @@ chrome.storage.onChanged.addListener(async (changes, area) => {
     if (newSettings && newSettings.otherGroupName !== otherGroupName) {
       otherGroupName = newSettings.otherGroupName || 'Other';
       needsRender = true;
+    }
+    if (newSettings) {
+      applyActiveHighlight(newSettings.activeHighlightColor || '');
     }
     if (newSettings && newSettings.youtubeProgress !== youtubeProgressEnabled) {
       youtubeProgressEnabled = newSettings.youtubeProgress || false;
@@ -2866,7 +2899,7 @@ chrome.tabs.onMoved.addListener(() => render('tabs.onMoved'));
 chrome.tabs.onAttached.addListener(() => render('tabs.onAttached'));
 chrome.tabs.onDetached.addListener(() => render('tabs.onDetached'));
 chrome.tabs.onActivated.addListener((activeInfo) => {
-  pendingScrollToTabId = activeInfo.tabId;
+  setStickyScroll(activeInfo.tabId);
   render('tabs.onActivated');
 });
 chrome.tabGroups.onCreated.addListener(() => render('tabGroups.onCreated'));

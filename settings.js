@@ -26,6 +26,11 @@ const modalSave = document.getElementById('modal-save');
 const otherGroupNameInput = document.getElementById('other-group-name');
 const refreshBtn = document.getElementById('refresh-btn');
 const youtubeProgressToggle = document.getElementById('youtube-progress');
+const activeHighlightColor = document.getElementById('active-highlight-color');
+const activeHighlightReset = document.getElementById('active-highlight-reset');
+
+// Default accent shown when no custom highlight color is set.
+const DEFAULT_HIGHLIGHT_COLOR = '#4f46e5';
 
 // Load settings from storage
 async function loadSettings() {
@@ -49,6 +54,7 @@ async function updateUI() {
   autoOrderingToggle.checked = settings.autoOrdering;
   autoOrderingSeconds.value = settings.autoOrderingSeconds;
   otherGroupNameInput.value = settings.otherGroupName || 'Other';
+  activeHighlightColor.value = settings.activeHighlightColor || DEFAULT_HIGHLIGHT_COLOR;
   customGroupingToggle.checked = settings.customGrouping;
 
   // Check if YouTube permission is granted to sync toggle state
@@ -219,6 +225,17 @@ allWindowsToggle.addEventListener('change', () => {
 
 fuseGroupsToggle.addEventListener('change', () => {
   settings.fuseGroups = fuseGroupsToggle.checked;
+  saveSettings();
+});
+
+activeHighlightColor.addEventListener('input', () => {
+  settings.activeHighlightColor = activeHighlightColor.value;
+  saveSettings();
+});
+
+activeHighlightReset.addEventListener('click', () => {
+  settings.activeHighlightColor = '';
+  activeHighlightColor.value = DEFAULT_HIGHLIGHT_COLOR;
   saveSettings();
 });
 
