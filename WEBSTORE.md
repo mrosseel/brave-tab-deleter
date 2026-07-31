@@ -32,20 +32,27 @@ FEATURES:
 
 - YouTube Progress - Opt-in feature to show video progress bars for YouTube tabs (requires permission)
 
+- Move Tabs Between Windows - Right-click tabs, groups, or fused groups to move them to another window. Window letter labels (A, B, C...) show where each tab lives
+
+- Other Tabs Sorting - Keep ungrouped tabs together at the end (or start) of the tab strip instead of scattered between groups
+
+- Abbreviate Collapsed Groups - Opt-in: shortens collapsed group titles only when the tab strip runs out of room, so more tabs stay visible
+
+- Active Tab Highlight - Pick your own accent color for the currently active tab
+
 - Tab Search - Click the search icon to filter tabs by title with wildcard support (use * as wildcard)
 
 Works with Chrome and Brave browsers.
 
 ## Changelog
 
-### v1.7.0 (2026-05-07)
-- Add "scroll to playing tab" header button — cycles through tabs currently playing audio, activating each in turn so you can pause/mute it
-- Add "scroll to active tab" header button and persist sidebar collapse/expand state
-- Fix YouTube content script not being included in published package (progress bars now work after install)
-- Reduce render thrashing: sidebar now ignores tab-update events that don't affect what's drawn
-- Coalesce rapid grouping work (e.g. session restore) into a single bulk pass instead of dozens of serialized operations
-- Make group-tracking writes durable across service-worker suspension
-- Fix lost-write race in ghost-group expiry
-- Make YouTube content script idempotent on re-injection (no listener pile-up after extension reload)
-- Settings handlers no longer fire twice on save
-- Better error handling for "No SW" / "Extension context invalidated" during service-worker hibernation
+### v1.8.0 (2026-07-31)
+- Move tabs, groups, and fused groups to another window from the right-click menu, with window letter labels (A, B, C...) showing where each tab lives
+- Add "Fuse same-named groups" setting to merge groups that share a name across windows
+- Close the sidebar from within via the header button
+- New "Other Tabs Sorting" setting keeps ungrouped tabs together at the end (or start) of the tab strip instead of scattered between groups
+- New opt-in setting abbreviates collapsed group titles, but only while the tab strip is out of room - collapsed groups keep their full name whenever they fit, and spell themselves out again when you widen the window
+- Pick a custom accent color for the active tab
+- Keep the active tab in view when switching tabs instead of snapping back to the previous scroll position
+- Fix YouTube progress bars going dead after the service worker hibernated: progress updates arriving during startup were dropped, and tabs were told to stop reporting until the sidebar was reopened
+- Keep YouTube progress running for every window while any sidebar is open in all-windows mode
