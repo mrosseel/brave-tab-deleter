@@ -3,6 +3,7 @@ import { GHOST_COUNTDOWN_INTERVAL_MS } from './lib/constants.js';
 import { calculateTargetIndex, getDropPosition } from './lib/drag-position.js';
 import { GHOST_GROUP_SECONDS, createGhostEntry, filterExpiredGhosts, getGhostRemainingSeconds } from './lib/ghost.js';
 import { createSleepingGroupEntry, isValidSleepingGroup, canSleepGroup } from './lib/sleep.js';
+import { getOtherGroupSortIndex } from './lib/ordering.js';
 import { loadFromStorage, saveToStorage } from './lib/storage.js';
 import { getColorForLabel, loadWindowLabels } from './lib/window-labels.js';
 
@@ -46,10 +47,19 @@ let collapsedBeforeSearch = new Set(); // Track which groups were collapsed befo
 let allWindows = false;
 let fuseGroups = false;
 let otherGroupName = 'Other';
+let otherTabsSorting = 'last';
 let youtubeProgressEnabled = false;
 
 // Window-label registry (windowId -> "A"/"B"/...). Populated from session storage.
 let windowLabels = {};
+
+// groupId -> full title, for groups the background abbreviated in the tab strip.
+let groupFullTitles = {};
+
+async function loadGroupFullTitles() {
+  const stored = await chrome.storage.local.get('groupFullTitles');
+  groupFullTitles = stored.groupFullTitles || {};
+}
 
 async function refreshWindowLabels() {
   const state = await loadWindowLabels();
@@ -143,6 +153,7 @@ async function loadSettings() {
     allWindows = stored.settings.allWindows || false;
     fuseGroups = stored.settings.fuseGroups || false;
     otherGroupName = stored.settings.otherGroupName || 'Other';
+    otherTabsSorting = stored.settings.otherTabsSorting || 'last';
     youtubeProgressEnabled = stored.settings.youtubeProgress || false;
     applyActiveHighlight(stored.settings.activeHighlightColor || '');
   }
@@ -1159,9 +1170,12 @@ async function loadTabs() {
     ? await chrome.tabGroups.query({})
     : await chrome.tabGroups.query({ windowId: currentWindowId });
 
+  // Collapsed groups may be abbreviated in the tab strip to save room; the
+  // sidebar has space, so it always shows the full name.
   const groupMap = new Map();
   groups.forEach(group => {
-    groupMap.set(group.id, group);
+    const fullTitle = groupFullTitles[group.id];
+    groupMap.set(group.id, fullTitle === undefined ? group : { ...group, title: fullTitle });
   });
 
   const groupedTabs = new Map();
@@ -2515,13 +2529,13 @@ async function render(source = 'unknown', forceRender = false) {
     });
   });
 
-  // Add "Other" (ungrouped) with position based on first ungrouped tab
+  // Add "Other" (ungrouped). By default it is pinned to the bottom; 'none'
+  // keeps it positioned by its first tab, matching the tab bar order.
   if (ungroupedTabs.length > 0) {
-    const firstIndex = Math.min(...ungroupedTabs.map(t => t.index));
     renderItems.push({
       type: 'ungrouped',
       tabs: ungroupedTabs,
-      firstTabIndex: firstIndex
+      firstTabIndex: getOtherGroupSortIndex(ungroupedTabs, otherTabsSorting)
     });
   }
 
@@ -2685,6 +2699,7 @@ async function render(source = 'unknown', forceRender = false) {
 (async () => {
   await loadSettings();
   await refreshWindowLabels();
+  await loadGroupFullTitles();
   await loadGhostGroups();
   await loadSleepingGroups();
   await loadYoutubeProgress();
@@ -2713,6 +2728,10 @@ chrome.storage.onChanged.addListener(async (changes, area) => {
       otherGroupName = newSettings.otherGroupName || 'Other';
       needsRender = true;
     }
+    if (newSettings && (newSettings.otherTabsSorting || 'last') !== otherTabsSorting) {
+      otherTabsSorting = newSettings.otherTabsSorting || 'last';
+      needsRender = true;
+    }
     if (newSettings) {
       applyActiveHighlight(newSettings.activeHighlightColor || '');
     }
@@ -2733,6 +2752,11 @@ chrome.storage.onChanged.addListener(async (changes, area) => {
   if (area === 'local' && changes.sleepingGroups) {
     await loadSleepingGroups();
     render('sleeping-groups-changed', true);
+  }
+  // Keep showing full names when the background abbreviates a collapsed group
+  if (area === 'local' && changes.groupFullTitles) {
+    await loadGroupFullTitles();
+    render('group-titles-changed', true);
   }
   // Refresh window labels when background updates them
   if (area === 'session' && changes.windowLabels) {

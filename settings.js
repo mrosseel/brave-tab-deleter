@@ -1,5 +1,6 @@
 import { getColorHex } from './lib/colors.js';
 import { escapeHtml } from './lib/domain.js';
+import { matchesGroupTitle } from './lib/abbrev.js';
 import { DEFAULT_SETTINGS } from './lib/settings-defaults.js';
 
 let settings = { ...DEFAULT_SETTINGS };
@@ -24,6 +25,8 @@ const colorPicker = document.getElementById('color-picker');
 const modalCancel = document.getElementById('modal-cancel');
 const modalSave = document.getElementById('modal-save');
 const otherGroupNameInput = document.getElementById('other-group-name');
+const otherTabsSortingSelect = document.getElementById('other-tabs-sorting');
+const abbreviateCollapsedGroupsToggle = document.getElementById('abbreviate-collapsed-groups');
 const refreshBtn = document.getElementById('refresh-btn');
 const youtubeProgressToggle = document.getElementById('youtube-progress');
 const activeHighlightColor = document.getElementById('active-highlight-color');
@@ -54,6 +57,8 @@ async function updateUI() {
   autoOrderingToggle.checked = settings.autoOrdering;
   autoOrderingSeconds.value = settings.autoOrderingSeconds;
   otherGroupNameInput.value = settings.otherGroupName || 'Other';
+  otherTabsSortingSelect.value = settings.otherTabsSorting || 'last';
+  abbreviateCollapsedGroupsToggle.checked = !!settings.abbreviateCollapsedGroups;
   activeHighlightColor.value = settings.activeHighlightColor || DEFAULT_HIGHLIGHT_COLOR;
   customGroupingToggle.checked = settings.customGrouping;
 
@@ -173,7 +178,7 @@ async function saveGroup() {
       if (oldName !== name || oldColor !== selectedColor) {
         try {
           const groups = await chrome.tabGroups.query({});
-          const match = groups.find(g => g.title === oldName && g.color === oldColor);
+          const match = groups.find(g => matchesGroupTitle(g.title, oldName) && g.color === oldColor);
           if (match) {
             await chrome.tabGroups.update(match.id, { title: name, color: selectedColor });
           }
@@ -260,6 +265,16 @@ autoOrderingSeconds.addEventListener('change', () => {
 
 otherGroupNameInput.addEventListener('input', () => {
   settings.otherGroupName = otherGroupNameInput.value.trim() || 'Other';
+  saveSettings();
+});
+
+otherTabsSortingSelect.addEventListener('change', () => {
+  settings.otherTabsSorting = otherTabsSortingSelect.value;
+  saveSettings();
+});
+
+abbreviateCollapsedGroupsToggle.addEventListener('change', () => {
+  settings.abbreviateCollapsedGroups = abbreviateCollapsedGroupsToggle.checked;
   saveSettings();
 });
 

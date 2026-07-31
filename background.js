@@ -13,11 +13,18 @@ import {
   unmarkAutoGroup,
   removeGroupId
 } from './lib/group-tracking.js';
+import {
+  abbreviateGroupTitle,
+  matchesGroupTitle,
+  stripOverflows,
+  visibleGroupLabels,
+  visibleTabs
+} from './lib/abbrev.js';
 import { DEFAULT_SETTINGS } from './lib/settings-defaults.js';
 import { bus, emitSettingsChanges } from './lib/events.js';
 import { ensureLabelsForWindows, releaseLabelForWindow } from './lib/window-labels.js';
 
-console.log('=== BACKGROUND.JS VERSION 13 LOADED ===');
+console.log('=== BACKGROUND.JS VERSION 15 LOADED ===');
 
 // Track sidebar state per window
 const sidebarOpen = new Map();
@@ -83,7 +90,7 @@ async function checkAndUpdateGroupStatus(groupId) {
     const firstDomain = getDomain(tabs[0].url);
     const allSameDomain = tabs.every(t => getDomain(t.url) === firstDomain);
     const expectedTitle = getShortName(firstDomain);
-    const titleMatches = group.title?.toLowerCase() === expectedTitle.toLowerCase();
+    const titleMatches = matchesGroupTitle(group.title, expectedTitle);
 
     if (allSameDomain) {
       if (!titleMatches) {
@@ -126,6 +133,10 @@ async function scheduleBulkGrouping() {
         console.error('[bg] applyAutoGroupingToAll failed:', err);
       }
     });
+    const windows = await chrome.windows.getAll({ windowTypes: ['normal'] });
+    for (const win of windows) {
+      scheduleOtherTabsSorting(win.id);
+    }
   } finally {
     bulkPending = false;
   }
@@ -411,7 +422,7 @@ function findCustomGroupForHostname(hostname) {
 // Find existing group by title and color
 async function findGroupByTitleAndColor(windowId, title, color) {
   const groups = await chrome.tabGroups.query({ windowId });
-  return groups.find(g => g.title === title && g.color === color);
+  return groups.find(g => matchesGroupTitle(g.title, title) && g.color === color);
 }
 
 // Find any group (regardless of how it was created) in another window that
@@ -443,10 +454,10 @@ async function findAutoGroupForDomainAnyWindow(domain, excludeWindowId) {
 
 // Find existing auto-created group for domain (by title, then by tab content)
 async function findAutoGroupForDomain(windowId, domain) {
-  const expectedTitle = getShortName(domain).toLowerCase();
+  const expectedTitle = getShortName(domain);
   const groups = await chrome.tabGroups.query({ windowId });
-  // First: match by title (case-insensitive)
-  const byTitle = groups.find(g => g.title?.toLowerCase() === expectedTitle);
+  // First: match by title (case-insensitive, abbreviated titles included)
+  const byTitle = groups.find(g => matchesGroupTitle(g.title, expectedTitle));
   if (byTitle) return byTitle;
   // Fallback: find a group where all tabs share this domain (catches unnamed/renamed groups)
   for (const group of groups) {
@@ -654,6 +665,175 @@ async function applyAutoGroupingToAll() {
   }
 }
 
+// --- Collapsed group title abbreviation ---
+
+// groupId -> full title, so an abbreviated group can be spelled out again.
+// Persisted because a collapsed group can outlive the service worker.
+let groupFullTitles = {};
+
+async function loadGroupFullTitles() {
+  try {
+    const stored = await chrome.storage.local.get('groupFullTitles');
+    groupFullTitles = stored.groupFullTitles || {};
+  } catch {
+    groupFullTitles = {};
+  }
+}
+
+async function saveGroupFullTitles() {
+  try {
+    await chrome.storage.local.set({ groupFullTitles });
+  } catch {}
+}
+
+// Group titles we are writing ourselves — used to ignore the resulting
+// onUpdated events instead of treating them as user renames.
+const selfTitleUpdates = new Set();
+
+async function setGroupTitle(groupId, title) {
+  selfTitleUpdates.add(groupId);
+  try {
+    await chrome.tabGroups.update(groupId, { title });
+  } catch {
+    // Group closed mid-flight
+  } finally {
+    selfTitleUpdates.delete(groupId);
+  }
+}
+
+// The title a group should show when there is room to spell it out.
+function fullTitleFor(group) {
+  return groupFullTitles[group.id] ?? group.title ?? '';
+}
+
+const ABBREV_DEBOUNCE_MS = 250;
+const pendingAbbrevWindowIds = new Set();
+let abbrevTimer = null;
+
+function scheduleGroupAbbreviation(windowId) {
+  if (!windowId) return;
+  pendingAbbrevWindowIds.add(windowId);
+  if (abbrevTimer) clearTimeout(abbrevTimer);
+  abbrevTimer = setTimeout(() => {
+    abbrevTimer = null;
+    const ids = [...pendingAbbrevWindowIds];
+    pendingAbbrevWindowIds.clear();
+    Promise.all(ids.map(id => applyGroupAbbreviation(id)))
+      .catch(err => console.error('[bg] group abbreviation failed:', err));
+  }, ABBREV_DEBOUNCE_MS);
+}
+
+// Abbreviate collapsed group titles, but only while the strip is estimated to
+// be out of room — collapsed groups keep their full name when they fit.
+async function applyGroupAbbreviation(windowId) {
+  await initPromise;
+
+  let win, tabs, groups;
+  try {
+    win = await chrome.windows.get(windowId);
+    tabs = await chrome.tabs.query({ windowId });
+    groups = await chrome.tabGroups.query({ windowId });
+  } catch {
+    return; // Window closed
+  }
+  if (groups.length === 0) return;
+
+  const enabled = !!settings.abbreviateCollapsedGroups;
+  const shown = visibleTabs(tabs, groups);
+  const fullLabels = visibleGroupLabels(groups, fullTitleFor);
+  const overflowing = enabled && stripOverflows(win.width, shown, fullLabels);
+
+  let dirty = false;
+  for (const group of groups) {
+    const full = fullTitleFor(group);
+    const abbreviated = abbreviateGroupTitle(full);
+    const wantAbbrev = overflowing && group.collapsed && abbreviated !== full;
+    const target = wantAbbrev ? abbreviated : full;
+
+    if (wantAbbrev) {
+      if (groupFullTitles[group.id] !== full) {
+        groupFullTitles[group.id] = full;
+        dirty = true;
+      }
+    } else if (group.id in groupFullTitles) {
+      delete groupFullTitles[group.id];
+      dirty = true;
+    }
+
+    if (target && group.title !== target) {
+      await setGroupTitle(group.id, target);
+    }
+  }
+  if (dirty) await saveGroupFullTitles();
+}
+
+// A rename while abbreviated replaces the remembered full title, so we never
+// restore a stale name over the user's own.
+function noteGroupRename(group) {
+  if (selfTitleUpdates.has(group.id)) return;
+  const remembered = groupFullTitles[group.id];
+  if (remembered === undefined) return;
+  if (group.title === abbreviateGroupTitle(remembered)) return;
+  groupFullTitles[group.id] = group.title ?? '';
+  saveGroupFullTitles();
+}
+
+// --- "Other" (ungrouped) tab placement ---
+
+const OTHER_SORT_DEBOUNCE_MS = 300;
+const pendingSortWindowIds = new Set();
+let otherSortTimer = null;
+
+// Coalesce placement passes: tab moves fire more events, so a burst of
+// grouping activity should still settle into a single pass per window.
+function scheduleOtherTabsSorting(windowId) {
+  if (!windowId) return;
+  if ((settings.otherTabsSorting || 'last') === 'none') return;
+  pendingSortWindowIds.add(windowId);
+  if (otherSortTimer) clearTimeout(otherSortTimer);
+  otherSortTimer = setTimeout(() => {
+    otherSortTimer = null;
+    const ids = [...pendingSortWindowIds];
+    pendingSortWindowIds.clear();
+    withGroupingLock(async () => {
+      for (const id of ids) {
+        await applyOtherTabsSorting(id);
+      }
+    }).catch(err => console.error('[bg] other tabs sorting failed:', err));
+  }, OTHER_SORT_DEBOUNCE_MS);
+}
+
+// Move ungrouped tabs to one end of the tab strip so they stop sitting between
+// groups. Pinned tabs never move, and tabs already in place are left alone so
+// we don't churn the strip on every event.
+async function applyOtherTabsSorting(windowId) {
+  const mode = settings.otherTabsSorting || 'last';
+  if (mode === 'none') return;
+
+  let tabs;
+  try {
+    tabs = await chrome.tabs.query({ windowId });
+  } catch {
+    return; // Window closed
+  }
+
+  const loose = tabs
+    .filter(t => t.groupId === -1 && !t.pinned)
+    .sort((a, b) => a.index - b.index);
+  if (loose.length === 0) return;
+
+  const pinnedCount = tabs.filter(t => t.pinned).length;
+  const target = mode === 'first' ? pinnedCount : tabs.length - loose.length;
+  if (loose.every((t, i) => t.index === target + i)) return;
+
+  try {
+    await chrome.tabs.move(loose.map(t => t.id), { index: target });
+  } catch {
+    // Tab closed mid-flight, or the user is dragging a tab; the next event
+    // schedules another pass.
+  }
+}
+
 // Apply auto-grouping to a specific window
 async function applyAutoGroupingToWindow(windowId) {
   const tabs = await chrome.tabs.query({ windowId });
@@ -667,7 +847,7 @@ async function applyAutoGroupingToWindow(windowId) {
   }
 
   // Find "Other" group and identify custom groups by title
-  const otherGroup = groups.find(g => g.title === settings.otherGroupName && g.color === 'grey');
+  const otherGroup = groups.find(g => matchesGroupTitle(g.title, settings.otherGroupName) && g.color === 'grey');
   const otherGroupId = otherGroup?.id;
   if (otherGroupId) await markAsAutoGroup(otherGroupId);
   const customGroupTitles = new Set((settings.customGroups || []).map(g => g.name));
@@ -704,7 +884,7 @@ async function applyAutoGroupingToWindow(windowId) {
       domainCounts.set(domain, (domainCounts.get(domain) || 0) + 1);
     }
     for (const [domain, count] of domainCounts) {
-      const existingGroup = groups.find(g => g.title?.toLowerCase() === getShortName(domain).toLowerCase());
+      const existingGroup = groups.find(g => matchesGroupTitle(g.title, getShortName(domain)));
       if (existingGroup || count >= 2) {
         hasWork = true;
         break;
@@ -789,7 +969,7 @@ async function applyAutoGroupingToWindow(windowId) {
           await markAsAutoGroup(existingGroup.id);
         }
         // Restore title if lost after crash/restart
-        if (existingGroup.title?.toLowerCase() !== displayName.toLowerCase()) {
+        if (!matchesGroupTitle(existingGroup.title, displayName)) {
           await chrome.tabGroups.update(existingGroup.id, { title: displayName });
         }
         // Only add tabs that aren't already in this group
@@ -873,6 +1053,7 @@ async function init() {
   await loadAutoGroupIds();
   await loadManualGroupIds();
   await loadYoutubeProgress();
+  await loadGroupFullTitles();
   await loadSidebarOpen();
   await seedWindowLabels();
   updateBadge();
@@ -887,6 +1068,20 @@ chrome.runtime.onInstalled.addListener(() => initPromise.then(() => updateBadge(
 
 // --- Settings Event Handlers ---
 bus.on('settings:allWindows', (newVal, oldVal, ctx) => updateBadge(ctx?.windowId));
+
+bus.on('settings:abbreviateCollapsedGroups', async () => {
+  const windows = await chrome.windows.getAll({ windowTypes: ['normal'] });
+  for (const win of windows) {
+    scheduleGroupAbbreviation(win.id);
+  }
+});
+
+bus.on('settings:otherTabsSorting', async () => {
+  const windows = await chrome.windows.getAll({ windowTypes: ['normal'] });
+  for (const win of windows) {
+    scheduleOtherTabsSorting(win.id);
+  }
+});
 
 bus.on('settings:autoGrouping', async (newValue) => {
   if (newValue) await scheduleBulkGrouping();
@@ -904,6 +1099,9 @@ bus.on('settings:customGroups', async () => {
 
 // --- Tab Event Handlers ---
 bus.on('tab:created', (tab) => updateBadge(settings.allWindows ? undefined : tab.windowId));
+bus.on('tab:created', (tab) => scheduleOtherTabsSorting(tab.windowId));
+bus.on('tab:created', (tab) => scheduleGroupAbbreviation(tab.windowId));
+bus.on('tab:removed', (tabId, removeInfo) => scheduleGroupAbbreviation(removeInfo.windowId));
 bus.on('tab:removed', (tabId, removeInfo) => updateBadge(settings.allWindows ? undefined : removeInfo.windowId));
 bus.on('tab:removed', (tabId) => tabActivationTimes.delete(tabId));
 bus.on('tab:removed', (tabId) => {
@@ -939,16 +1137,40 @@ bus.on('tab:updated', async (tabId, changeInfo, tab) => {
   if (changeInfo.status !== 'complete') return;
   if (shouldSkipUrl(tab.url)) return;
   scheduleSingleTabGrouping(tab.id);
+  scheduleOtherTabsSorting(tab.windowId);
 });
+
+// A tab leaving a group (manually or when its group is removed) lands in the
+// middle of the strip, so re-place ungrouped tabs when the strip changes.
+bus.on('tab:moved', (tabId, moveInfo) => scheduleOtherTabsSorting(moveInfo.windowId));
+bus.on('tab:attached', (tabId, attachInfo) => scheduleOtherTabsSorting(attachInfo.newWindowId));
+bus.on('tab:attached', (tabId, attachInfo) => scheduleGroupAbbreviation(attachInfo.newWindowId));
+bus.on('tab:detached', (tabId, detachInfo) => scheduleGroupAbbreviation(detachInfo.oldWindowId));
 
 // --- Group Event Handlers ---
 bus.on('group:removed', async (group) => { await removeGroupId(group.id); });
+bus.on('group:removed', (group) => scheduleOtherTabsSorting(group.windowId));
+bus.on('group:removed', async (group) => {
+  if (group.id in groupFullTitles) {
+    delete groupFullTitles[group.id];
+    await saveGroupFullTitles();
+  }
+});
+bus.on('group:updated', (group) => {
+  noteGroupRename(group);
+  scheduleGroupAbbreviation(group.windowId);
+});
 
 // --- Wire Chrome events to bus ---
 chrome.tabs.onCreated.addListener((tab) => bus.emit('tab:created', tab));
 chrome.tabs.onRemoved.addListener((tabId, removeInfo) => bus.emit('tab:removed', tabId, removeInfo));
 chrome.tabs.onActivated.addListener((info) => bus.emit('tab:activated', info));
 chrome.tabs.onUpdated.addListener((id, info, tab) => bus.emit('tab:updated', id, info, tab));
+chrome.tabs.onMoved.addListener((id, info) => bus.emit('tab:moved', id, info));
+chrome.tabs.onAttached.addListener((id, info) => bus.emit('tab:attached', id, info));
+chrome.tabs.onDetached.addListener((id, info) => bus.emit('tab:detached', id, info));
+chrome.tabGroups.onUpdated.addListener((group) => bus.emit('group:updated', group));
+chrome.windows.onBoundsChanged.addListener((win) => scheduleGroupAbbreviation(win.id));
 chrome.tabGroups.onRemoved.addListener((group) => bus.emit('group:removed', group));
 
 chrome.windows.onCreated.addListener(async (win) => {

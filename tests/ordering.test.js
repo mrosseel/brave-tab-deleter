@@ -2,7 +2,9 @@ import { describe, it, expect } from 'vitest';
 import {
   shouldReorderTab,
   findFirstPositionInGroup,
-  needsReordering
+  needsReordering,
+  getOtherGroupSortIndex,
+  OTHER_LAST_SORT_INDEX
 } from '../lib/ordering.js';
 
 describe('shouldReorderTab', () => {
@@ -137,5 +139,37 @@ describe('needsReordering', () => {
       { id: 3, index: 5 },
     ];
     expect(needsReordering(tab, groupTabs)).toBe(false);
+  });
+});
+
+describe('getOtherGroupSortIndex', () => {
+  const tabs = [{ id: 1, index: 4 }, { id: 2, index: 2 }, { id: 3, index: 9 }];
+
+  it('pins the group last by default', () => {
+    expect(getOtherGroupSortIndex(tabs, 'last')).toBe(OTHER_LAST_SORT_INDEX);
+  });
+
+  it('sorts before sleeping groups when pinned last', () => {
+    expect(getOtherGroupSortIndex(tabs, 'last')).toBeLessThan(Infinity);
+  });
+
+  it('pins the group first', () => {
+    expect(getOtherGroupSortIndex(tabs, 'first')).toBe(-1);
+  });
+
+  it('sorts before any real group when pinned first', () => {
+    expect(getOtherGroupSortIndex(tabs, 'first')).toBeLessThan(0);
+  });
+
+  it('follows tab order with none', () => {
+    expect(getOtherGroupSortIndex(tabs, 'none')).toBe(2);
+  });
+
+  it('falls back to last for an unknown mode', () => {
+    expect(getOtherGroupSortIndex(tabs, 'bogus')).toBe(OTHER_LAST_SORT_INDEX);
+  });
+
+  it('handles an empty tab list with none', () => {
+    expect(getOtherGroupSortIndex([], 'none')).toBe(OTHER_LAST_SORT_INDEX);
   });
 });
