@@ -380,6 +380,12 @@ chrome.action.onClicked.addListener(async (tab) => {
 
 // Update badge with tab count
 // If windowId provided, only update that window's badge
+// Set the badge text on one tab. The tab can close before the call runs,
+// and then the call fails. That failure is expected, so ignore it.
+function setTabBadge(text, tabId) {
+  chrome.action.setBadgeText({ text, tabId }).catch(() => {});
+}
+
 async function updateBadge(windowId) {
   chrome.action.setBadgeBackgroundColor({ color: '#6366f1' });
 
@@ -392,13 +398,13 @@ async function updateBadge(windowId) {
       // Only update tabs in specified window
       const windowTabs = allTabs.filter(t => t.windowId === windowId);
       for (const tab of windowTabs) {
-        chrome.action.setBadgeText({ text: count, tabId: tab.id });
+        setTabBadge(count, tab.id);
       }
     } else {
       // Update all tabs
       chrome.action.setBadgeText({ text: count });
       for (const tab of allTabs) {
-        chrome.action.setBadgeText({ text: count, tabId: tab.id });
+        setTabBadge(count, tab.id);
       }
     }
   } else {
@@ -407,7 +413,7 @@ async function updateBadge(windowId) {
       const tabs = await chrome.tabs.query({ windowId });
       const [activeTab] = await chrome.tabs.query({ windowId, active: true });
       if (activeTab) {
-        chrome.action.setBadgeText({ text: tabs.length.toString(), tabId: activeTab.id });
+        setTabBadge(tabs.length.toString(), activeTab.id);
       }
     } else {
       // Update all windows
@@ -416,7 +422,7 @@ async function updateBadge(windowId) {
         const tabs = await chrome.tabs.query({ windowId: win.id });
         const [activeTab] = await chrome.tabs.query({ windowId: win.id, active: true });
         if (activeTab) {
-          chrome.action.setBadgeText({ text: tabs.length.toString(), tabId: activeTab.id });
+          setTabBadge(tabs.length.toString(), activeTab.id);
         }
       }
     }
@@ -1187,7 +1193,7 @@ const lastActiveTabByWindow = new Map();
 bus.on('tab:activated', async (activeInfo) => {
   if (!settings.allWindows) {
     const tabs = await chrome.tabs.query({ windowId: activeInfo.windowId });
-    chrome.action.setBadgeText({ text: tabs.length.toString(), tabId: activeInfo.tabId });
+    setTabBadge(tabs.length.toString(), activeInfo.tabId);
   }
   // Only the tab that just lost focus can have passed its time threshold
   const previousTabId = lastActiveTabByWindow.get(activeInfo.windowId);
