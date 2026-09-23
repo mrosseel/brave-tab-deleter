@@ -3,7 +3,7 @@ import { GHOST_COUNTDOWN_INTERVAL_MS } from './lib/constants.js';
 import { calculateTargetIndex, getDropPosition } from './lib/drag-position.js';
 import { GHOST_GROUP_SECONDS, createGhostEntry, filterExpiredGhosts, getGhostRemainingSeconds } from './lib/ghost.js';
 import { createSleepingGroupEntry, isValidSleepingGroup, canSleepGroup } from './lib/sleep.js';
-import { getOtherGroupSortIndex } from './lib/ordering.js';
+import { compareCustomFirst, customGroupRank, getOtherGroupSortIndex } from './lib/ordering.js';
 import { loadFromStorage, saveToStorage } from './lib/storage.js';
 import { getColorForLabel, loadWindowLabels } from './lib/window-labels.js';
 
@@ -48,6 +48,9 @@ let allWindows = false;
 let fuseGroups = false;
 let otherGroupName = 'Other';
 let otherTabsSorting = 'last';
+let customGroupsFirst = false;
+let customGrouping = false;
+let customGroups = [];
 let youtubeProgressEnabled = false;
 
 // Window-label registry (windowId -> "A"/"B"/...). Populated from session storage.
@@ -154,6 +157,9 @@ async function loadSettings() {
     fuseGroups = stored.settings.fuseGroups || false;
     otherGroupName = stored.settings.otherGroupName || 'Other';
     otherTabsSorting = stored.settings.otherTabsSorting || 'last';
+    customGroupsFirst = !!stored.settings.customGroupsFirst;
+    customGrouping = !!stored.settings.customGrouping;
+    customGroups = stored.settings.customGroups || [];
     youtubeProgressEnabled = stored.settings.youtubeProgress || false;
     applyActiveHighlight(stored.settings.activeHighlightColor || '');
   }
@@ -2572,6 +2578,15 @@ async function render(source = 'unknown', forceRender = false) {
     processedItems.sort((a, b) => a.firstTabIndex - b.firstTabIndex);
   }
 
+  // Put custom groups first, in the order of the custom groups list
+  if (customGroupsFirst && customGrouping && customGroups.length > 0) {
+    for (const item of processedItems) {
+      if (item.type === 'real') item.customRank = customGroupRank(item.groupInfo?.title, customGroups);
+      else if (item.type === 'fused') item.customRank = customGroupRank(item.title, customGroups);
+    }
+    processedItems.sort(compareCustomFirst);
+  }
+
   // --- DOM diffing: patch existing groups in-place ---
 
   // Build map of existing group elements by data-group-id
@@ -2731,6 +2746,14 @@ chrome.storage.onChanged.addListener(async (changes, area) => {
     if (newSettings && (newSettings.otherTabsSorting || 'last') !== otherTabsSorting) {
       otherTabsSorting = newSettings.otherTabsSorting || 'last';
       needsRender = true;
+    }
+    if (newSettings) {
+      const oldOrderKey = JSON.stringify([customGroupsFirst, customGrouping, customGroups.map(g => g.name)]);
+      customGroupsFirst = !!newSettings.customGroupsFirst;
+      customGrouping = !!newSettings.customGrouping;
+      customGroups = newSettings.customGroups || [];
+      const newOrderKey = JSON.stringify([customGroupsFirst, customGrouping, customGroups.map(g => g.name)]);
+      if (newOrderKey !== oldOrderKey) needsRender = true;
     }
     if (newSettings) {
       applyActiveHighlight(newSettings.activeHighlightColor || '');

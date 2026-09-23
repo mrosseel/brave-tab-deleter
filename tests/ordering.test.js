@@ -4,7 +4,12 @@ import {
   findFirstPositionInGroup,
   needsReordering,
   getOtherGroupSortIndex,
-  OTHER_LAST_SORT_INDEX
+  OTHER_LAST_SORT_INDEX,
+  customGroupRank,
+  compareCustomFirst,
+  orderedCustomGroupIds,
+  planCustomGroupMoves,
+  frontBlockEnd
 } from '../lib/ordering.js';
 
 describe('shouldReorderTab', () => {
@@ -171,5 +176,145 @@ describe('getOtherGroupSortIndex', () => {
 
   it('handles an empty tab list with none', () => {
     expect(getOtherGroupSortIndex([], 'none')).toBe(OTHER_LAST_SORT_INDEX);
+  });
+});
+
+const CUSTOM = [{ name: 'Work' }, { name: 'News' }];
+
+// Build tabs from a strip layout: 'p' is pinned, '-' is ungrouped, a number
+// is a group ID.
+function stripTabs(layout) {
+  return layout.map((slot, index) => ({
+    id: 100 + index,
+    index,
+    pinned: slot === 'p',
+    groupId: typeof slot === 'number' ? slot : -1
+  }));
+}
+
+// Apply group moves the same way chrome.tabGroups.move does.
+function applyMoves(layout, moves) {
+  const slots = [...layout];
+  for (const { groupId, index } of moves) {
+    const start = slots.indexOf(groupId);
+    const count = slots.filter(s => s === groupId).length;
+    slots.splice(start, count);
+    slots.splice(index, 0, ...Array(count).fill(groupId));
+  }
+  return slots;
+}
+
+describe('customGroupRank', () => {
+  it('returns the list position of a matching title', () => {
+    expect(customGroupRank('News', CUSTOM)).toBe(1);
+  });
+
+  it('matches case-insensitively', () => {
+    expect(customGroupRank('work', CUSTOM)).toBe(0);
+  });
+
+  it('returns -1 for a group that is not custom', () => {
+    expect(customGroupRank('github', CUSTOM)).toBe(-1);
+  });
+
+  it('returns -1 for an empty title or no list', () => {
+    expect(customGroupRank('', CUSTOM)).toBe(-1);
+    expect(customGroupRank('Work', undefined)).toBe(-1);
+  });
+});
+
+describe('compareCustomFirst', () => {
+  it('puts custom items before other items', () => {
+    const items = [
+      { id: 'auto', firstTabIndex: 0 },
+      { id: 'other', firstTabIndex: -1 },
+      { id: 'news', firstTabIndex: 2, customRank: 1 },
+      { id: 'work', firstTabIndex: 9, customRank: 0 }
+    ];
+    items.sort(compareCustomFirst);
+    expect(items.map(i => i.id)).toEqual(['work', 'news', 'other', 'auto']);
+  });
+
+  it('keeps tab order between items of the same rank', () => {
+    const items = [
+      { id: 'b', firstTabIndex: 5, customRank: 0 },
+      { id: 'a', firstTabIndex: 1, customRank: 0 }
+    ];
+    items.sort(compareCustomFirst);
+    expect(items.map(i => i.id)).toEqual(['a', 'b']);
+  });
+
+  it('keeps sleeping groups (Infinity) last among non-custom items', () => {
+    const items = [
+      { id: 'sleep', firstTabIndex: Infinity },
+      { id: 'auto', firstTabIndex: 3 }
+    ];
+    items.sort(compareCustomFirst);
+    expect(items.map(i => i.id)).toEqual(['auto', 'sleep']);
+  });
+});
+
+describe('orderedCustomGroupIds', () => {
+  it('orders custom groups by list order and skips other groups', () => {
+    const groups = [
+      { id: 1, title: 'github' },
+      { id: 2, title: 'News' },
+      { id: 3, title: 'Work' }
+    ];
+    const tabs = stripTabs([1, 1, 2, 3]);
+    expect(orderedCustomGroupIds(groups, tabs, CUSTOM)).toEqual([3, 2]);
+  });
+
+  it('skips groups without tabs', () => {
+    const groups = [{ id: 3, title: 'Work' }];
+    expect(orderedCustomGroupIds(groups, stripTabs(['-']), CUSTOM)).toEqual([]);
+  });
+
+  it('orders two groups with the same name by strip position', () => {
+    const groups = [{ id: 5, title: 'Work' }, { id: 4, title: 'Work' }];
+    const tabs = stripTabs([4, 5]);
+    expect(orderedCustomGroupIds(groups, tabs, CUSTOM)).toEqual([4, 5]);
+  });
+});
+
+describe('planCustomGroupMoves', () => {
+  it('returns no moves when the strip is already in order', () => {
+    const layout = ['p', 3, 3, 2, 1, '-'];
+    expect(planCustomGroupMoves(stripTabs(layout), [3, 2])).toEqual([]);
+  });
+
+  it('moves custom groups to the front after pinned tabs', () => {
+    const layout = ['p', '-', 1, 1, 2, 3, 3];
+    const moves = planCustomGroupMoves(stripTabs(layout), [3, 2]);
+    expect(applyMoves(layout, moves)).toEqual(['p', 3, 3, 2, '-', 1, 1]);
+  });
+
+  it('only moves the groups that are out of place', () => {
+    const layout = [3, 1, 2];
+    expect(planCustomGroupMoves(stripTabs(layout), [3, 2])).toEqual([
+      { groupId: 2, index: 1 }
+    ]);
+  });
+
+  it('gives no moves on a second pass (no move loop)', () => {
+    const layout = ['-', 1, 2, 2, '-', 3];
+    const moves = planCustomGroupMoves(stripTabs(layout), [3, 2]);
+    const after = applyMoves(layout, moves);
+    expect(planCustomGroupMoves(stripTabs(after), [3, 2])).toEqual([]);
+  });
+
+  it('ignores group IDs that are not in the strip', () => {
+    expect(planCustomGroupMoves(stripTabs([1, 2]), [9])).toEqual([]);
+  });
+});
+
+describe('frontBlockEnd', () => {
+  it('counts pinned tabs and tabs of the front groups', () => {
+    const tabs = stripTabs(['p', 3, 3, 2, '-', 1]);
+    expect(frontBlockEnd(tabs, [3, 2])).toBe(4);
+  });
+
+  it('equals the pinned count when there are no front groups', () => {
+    expect(frontBlockEnd(stripTabs(['p', 'p', '-', 1]), [])).toBe(2);
   });
 });
