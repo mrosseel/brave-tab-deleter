@@ -178,7 +178,14 @@ async function loadSettings() {
 }
 
 // Listen for messages
+// Message types a content script may send. Web pages run content scripts, so
+// they must not reach the handlers that change groups or settings.
+const CONTENT_SCRIPT_MESSAGES = new Set(['youtubeProgress', 'youtubeContentScriptReady']);
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (sender.id !== chrome.runtime.id) return;
+  if (sender.tab && !CONTENT_SCRIPT_MESSAGES.has(message?.type)) return;
+
   if (message.type === 'sidebarOpened') {
     scheduleBulkGrouping()
       .catch(err => console.error('[bg] sidebarOpened bulk failed:', err))
@@ -207,6 +214,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ groupType: 'none' });
     }
     return true;
+  } else if (message.type === 'getGroupTypes') {
+    const groupTypes = {};
+    for (const groupId of message.groupIds || []) {
+      if (isAutoGroupId(groupId)) groupTypes[groupId] = 'auto';
+      else if (isManualGroupId(groupId)) groupTypes[groupId] = 'manual';
+      else groupTypes[groupId] = 'none';
+    }
+    sendResponse({ groupTypes });
+    return true;
   } else if (message.type === 'markManualGroup') {
     markAsManualGroup(message.groupId).then(() => sendResponse({ success: true }));
     return true;
@@ -218,17 +234,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // reading settings — otherwise the update is dropped against defaults.
     initPromise.then(() => {
       if (!sender.tab || !settings.youtubeProgress) return;
-      youtubeProgress.set(sender.tab.id, {
-        progress: message.progress,
-        videoId: message.videoId
-      });
+      const progress = message.progress == null ? null
+        : Math.min(100, Math.max(0, Number(message.progress) || 0));
+      const videoId = typeof message.videoId === 'string' ? message.videoId : null;
+      const previous = youtubeProgress.get(sender.tab.id);
+      if (previous && previous.progress === progress && previous.videoId === videoId) return;
+      youtubeProgress.set(sender.tab.id, { progress, videoId });
       saveYoutubeProgress();
       // Broadcast to all sidebars
       chrome.runtime.sendMessage({
         type: 'youtubeProgressUpdate',
         tabId: sender.tab.id,
-        progress: message.progress,
-        videoId: message.videoId
+        progress,
+        videoId
       }).catch(() => {});
     });
   } else if (message.type === 'getYoutubeProgress') {
@@ -1008,8 +1026,12 @@ async function checkAutoOrdering(tabId) {
 
     const sortedTabs = groupTabs.sort((a, b) => a.index - b.index);
     if (tab.id !== sortedTabs[0].id) {
-      await chrome.tabs.move(tab.id, { index: sortedTabs[0].index });
-      await chrome.tabs.group({ tabIds: tab.id, groupId: tab.groupId });
+      // The move takes the tab out of its group for a moment. Hold the lock so
+      // no other grouping step sees or acts on that state.
+      await withGroupingLock(async () => {
+        await chrome.tabs.move(tab.id, { index: sortedTabs[0].index });
+        await chrome.tabs.group({ tabIds: tab.id, groupId: tab.groupId });
+      });
     }
   } catch {
     // Tab might have been closed
@@ -1108,14 +1130,19 @@ bus.on('tab:removed', (tabId) => {
   if (youtubeProgress.delete(tabId)) saveYoutubeProgress();
 });
 
+// windowId -> ID of the tab that was active before the current activation
+const lastActiveTabByWindow = new Map();
+
 bus.on('tab:activated', async (activeInfo) => {
   if (!settings.allWindows) {
     const tabs = await chrome.tabs.query({ windowId: activeInfo.windowId });
     chrome.action.setBadgeText({ text: tabs.length.toString(), tabId: activeInfo.tabId });
   }
-  const tabs = await chrome.tabs.query({ windowId: activeInfo.windowId });
-  for (const tab of tabs) {
-    if (tab.id !== activeInfo.tabId) checkAutoOrdering(tab.id);
+  // Only the tab that just lost focus can have passed its time threshold
+  const previousTabId = lastActiveTabByWindow.get(activeInfo.windowId);
+  lastActiveTabByWindow.set(activeInfo.windowId, activeInfo.tabId);
+  if (previousTabId !== undefined && previousTabId !== activeInfo.tabId) {
+    checkAutoOrdering(previousTabId);
   }
   tabActivationTimes.set(activeInfo.tabId, Date.now());
 });

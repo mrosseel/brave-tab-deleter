@@ -15,6 +15,7 @@
   --active-tab-bg: #e0e7ff;
   --selected-tab-bg: #d0d8f0;
   --active-accent: #4f46e5;
+  --active-text: #ffffff;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -29,6 +30,7 @@
     --active-tab-bg: #2d3a5a;
     --selected-tab-bg: #364470;
     --active-accent: #818cf8;
+    --active-text: #111111;
   }
 }
 
@@ -289,18 +291,37 @@ body {
   background-color: var(--hover-bg);
 }
 
-.tab-item.active {
-  background-color: color-mix(in srgb, var(--active-accent) 22%, var(--bg-color));
-  box-shadow: inset 4px 0 0 var(--active-accent);
+.tab-item.selected {
+  background-color: var(--selected-tab-bg);
+}
+
+/* The active tab is an inverted bar: accent background, contrasting text.
+   These rules come after .selected and :hover so they win over them. */
+.tab-item.active,
+.tab-item.active:hover,
+.tab-item.active.selected {
+  background-color: var(--active-accent);
+  color: var(--active-text);
+}
+
+.tab-item.active.selected {
+  box-shadow: inset 0 0 0 2px var(--active-text);
 }
 
 .tab-item.active .tab-title {
   font-weight: 600;
-  color: var(--text-color);
+  color: var(--active-text);
 }
 
-.tab-item.selected {
-  background-color: var(--selected-tab-bg);
+.tab-item.active .close-btn {
+  color: var(--active-text);
+  opacity: 0.85;
+}
+
+.tab-item.active .favicon-wrapper {
+  background-color: #ffffff;
+  border-radius: 3px;
+  box-shadow: 0 0 0 2px #ffffff;
 }
 
 .tab-item .close-btn {

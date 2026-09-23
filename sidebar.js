@@ -1,4 +1,4 @@
-import { getColorHex } from './lib/colors.js';
+import { getColorHex, getContrastTextColor } from './lib/colors.js';
 import { GHOST_COUNTDOWN_INTERVAL_MS } from './lib/constants.js';
 import { calculateTargetIndex, getDropPosition } from './lib/drag-position.js';
 import { GHOST_GROUP_SECONDS, createGhostEntry, filterExpiredGhosts, getGhostRemainingSeconds } from './lib/ghost.js';
@@ -141,8 +141,10 @@ const youtubeProgress = new Map();
 function applyActiveHighlight(color) {
   if (color) {
     document.documentElement.style.setProperty('--active-accent', color);
+    document.documentElement.style.setProperty('--active-text', getContrastTextColor(color));
   } else {
     document.documentElement.style.removeProperty('--active-accent');
+    document.documentElement.style.removeProperty('--active-text');
   }
 }
 
@@ -208,7 +210,7 @@ function updateHeaderTabCount(delta) {
   tabCountEl.textContent = `(${current + delta})`;
 }
 
-function scrollToTab(tabId) {
+function scrollToTab(tabId, behavior = 'instant') {
   const tabEl = document.querySelector(`[data-tab-id="${tabId}"]`);
   if (!tabEl) return;
 
@@ -217,9 +219,9 @@ function scrollToTab(tabId) {
 
   if (tabsContainer?.classList.contains('collapsed')) {
     const header = groupContainer?.querySelector('.group-header');
-    header?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    header?.scrollIntoView({ behavior, block: 'center' });
   } else {
-    tabEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    tabEl.scrollIntoView({ behavior, block: 'center' });
   }
 }
 
@@ -399,6 +401,16 @@ async function showContextMenu(e, tab) {
   contextMenu.style.top = `${y}px`;
 }
 
+// Build a submenu row from a colored marker and a plain-text label.
+// Labels come from tab group titles and settings, so never parse them as HTML.
+function fillSubmenuItem(item, markerClass, color, markerText, label) {
+  const marker = document.createElement('span');
+  marker.className = markerClass;
+  marker.style.backgroundColor = color;
+  if (markerText) marker.textContent = markerText;
+  item.replaceChildren(marker, document.createTextNode(label));
+}
+
 async function populateMoveToGroupSubmenu() {
   moveToGroupSubmenu.innerHTML = '';
 
@@ -407,7 +419,7 @@ async function populateMoveToGroupSubmenu() {
 
   const otherItem = document.createElement('div');
   otherItem.className = 'context-submenu-item';
-  otherItem.innerHTML = `<span class="submenu-color-dot" style="background-color: ${getColorHex('grey')}"></span>${otherGroupName}`;
+  fillSubmenuItem(otherItem, 'submenu-color-dot', getColorHex('grey'), '', otherGroupName);
   otherItem.addEventListener('click', () => {
     if (contextMenuTabs.length > 0) {
       for (const t of contextMenuTabs) moveTabToGroup(t.id, 'ungrouped');
@@ -435,7 +447,7 @@ async function populateMoveToGroupSubmenu() {
 
     const item = document.createElement('div');
     item.className = 'context-submenu-item';
-    item.innerHTML = `<span class="submenu-color-dot" style="background-color: ${getColorHex(group.color)}"></span>${group.title || 'Unnamed'}`;
+    fillSubmenuItem(item, 'submenu-color-dot', getColorHex(group.color), '', group.title || 'Unnamed');
     item.addEventListener('click', () => {
       if (contextMenuTabs.length > 0) {
         for (const t of contextMenuTabs) moveTabToGroup(t.id, group.id);
@@ -570,7 +582,7 @@ async function populateMoveGroupToWindowSubmenu(groupId) {
   for (const { windowId, label } of targets) {
     const item = document.createElement('div');
     item.className = 'context-submenu-item';
-    item.innerHTML = `<span class="window-badge" style="background-color: ${getColorForLabel(label)}">${label}</span>Window ${label}`;
+    fillSubmenuItem(item, 'window-badge', getColorForLabel(label), label, `Window ${label}`);
     item.addEventListener('click', async () => {
       hideGroupContextMenu();
       await moveGroupToWindow(groupId, windowId);
@@ -605,7 +617,7 @@ async function populateMoveToWindowSubmenu() {
   for (const { windowId, label } of targets) {
     const item = document.createElement('div');
     item.className = 'context-submenu-item';
-    item.innerHTML = `<span class="window-badge" style="background-color: ${getColorForLabel(label)}">${label}</span>Window ${label}`;
+    fillSubmenuItem(item, 'window-badge', getColorForLabel(label), label, `Window ${label}`);
     item.addEventListener('click', async () => {
       const ids = contextMenuTabs.map((t) => t.id);
       hideContextMenu();
@@ -783,7 +795,7 @@ async function populateMoveFusedToWindowSubmenu(title, sourceWindowIds) {
   for (const { windowId, label } of targets) {
     const item = document.createElement('div');
     item.className = 'context-submenu-item';
-    item.innerHTML = `<span class="window-badge" style="background-color: ${getColorForLabel(label)}">${label}</span>Window ${label}`;
+    fillSubmenuItem(item, 'window-badge', getColorForLabel(label), label, `Window ${label}`);
     item.addEventListener('click', async () => {
       hideFusedContextMenu();
       await moveFusedToWindow(title, windowId);
@@ -1159,11 +1171,22 @@ function setStickyScroll(tabId) {
 
 
 
+// The side panel belongs to one window for its whole life, so read its ID once.
+const sidebarWindowIdPromise = chrome.windows.getCurrent().then(w => w.id);
+let sidebarWindowId = null;
+sidebarWindowIdPromise.then(id => { sidebarWindowId = id; });
+
+// The highlighted tab is the active tab of this sidebar's window. With
+// "all windows" on, other windows also have an active tab. Do not mark those.
+function isHighlightedTab(tab) {
+  return !!tab.active && (sidebarWindowId === null || tab.windowId === sidebarWindowId);
+}
+
 async function loadTabs() {
   // Query tabs based on window scope setting
   const queryOptions = allWindows ? {} : { currentWindow: true };
   const tabs = await chrome.tabs.query(queryOptions);
-  const currentWindowId = (await chrome.windows.getCurrent()).id;
+  const currentWindowId = await sidebarWindowIdPromise;
 
   // Get groups from all windows or current window
   const groups = allWindows
@@ -1226,7 +1249,7 @@ function getGroupColor(group) {
 
 function createTabElement(tab, groupInfo, onClose) {
   const div = document.createElement('div');
-  div.className = 'tab-item' + (tab.active ? ' active' : '');
+  div.className = 'tab-item' + (isHighlightedTab(tab) ? ' active' : '');
   div.dataset.tabId = tab.id;
   div.draggable = true;
 
@@ -1335,7 +1358,6 @@ function createTabElement(tab, groupInfo, onClose) {
           const isFusedTarget = typeof targetGroupId === 'string' && targetGroupId.startsWith('fused:');
           if (isFusedTarget) {
             await handleFusedDrop(targetGroupId.slice('fused:'.length), sortedIds, draggedTabs);
-            render('tab-drag-complete');
           } else {
           // Move tabs one at a time, adjusting for index shifts
           for (const tabId of sortedIds) {
@@ -1393,20 +1415,10 @@ function createTabElement(tab, groupInfo, onClose) {
               await safeSendMessage({ type: 'markManualGroup', groupId: groupIdNum });
             }
           }
-
-          render('tab-drag-complete');
           }
         } catch (err) {
+          // The render below puts every tab back where the browser has it
           console.error('Failed to move tab(s):', err, 'targetGroupId:', targetGroupId, 'allTabIds:', allTabIds);
-          // Revert primary to original position
-          const orig = primaryOriginal;
-          if (orig.parent && document.contains(orig.parent)) {
-            try {
-              orig.parent.insertBefore(primaryElement, orig.nextSibling);
-            } catch (e) {
-              // DOM may have changed, ignore
-            }
-          }
         }
       }
     }
@@ -1415,6 +1427,7 @@ function createTabElement(tab, groupInfo, onClose) {
     draggedTabs = [];
     draggedElements = [];
     originalPositions = [];
+    renderAfterDragEnd('tab-drag-complete');
   });
 
   // Drag over - move element to show preview
@@ -1572,6 +1585,7 @@ function setupGroupDragHandlers(container, groupId, tabs, groupInfo) {
   container.addEventListener('dragend', async () => {
     container.classList.remove('dragging');
     isDragging = false;
+    if (renderAfterDrag) renderAfterDragEnd('group-drag-end');
 
     if (draggedGroup && draggedGroupElement) {
       const movedToNewPosition = draggedGroupElement.nextSibling !== originalGroupNextSibling;
@@ -2325,7 +2339,7 @@ function updateFusedGroup(groupEl, item) {
 // Patch an existing .tab-item element with new tab data
 function updateTabElement(el, tab) {
   // Active class
-  el.classList.toggle('active', !!tab.active);
+  el.classList.toggle('active', isHighlightedTab(tab));
 
   // Title
   const titleEl = el.querySelector('.tab-title');
@@ -2437,7 +2451,13 @@ function diffGroupTabs(tabsContainer, newTabs, groupInfo, isGhost, isUngrouped, 
   const existingMap = new Map();
   for (const el of tabsContainer.querySelectorAll(':scope > .tab-item')) {
     const tabId = el.dataset.tabId;
-    if (tabId) existingMap.set(tabId, el);
+    if (!tabId) continue;
+    // Remove a second element for the same tab, so a tab never shows twice
+    if (existingMap.has(tabId)) {
+      el.remove();
+      continue;
+    }
+    existingMap.set(tabId, el);
   }
 
   const newTabIds = new Set(newTabs.map(t => String(t.id)));
@@ -2487,10 +2507,42 @@ function diffGroupTabs(tabsContainer, newTabs, groupInfo, isGhost, isUngrouped, 
   }
 }
 
+// Only one render runs at a time. A request that comes in while a render runs
+// sets renderQueued, and the loop runs one more render with fresh data. This
+// stops an older render from finishing last and writing stale state.
+let renderRunning = false;
+let renderQueued = false;
+// Set when a render is skipped because of a drag, so dragend renders once.
+let renderAfterDrag = false;
+
 async function render(source = 'unknown', forceRender = false) {
-  if (isDragging) return; // Don't rebuild DOM while user is dragging
+  if (isDragging) {
+    renderAfterDrag = true;
+    return;
+  }
+  if (renderRunning) {
+    renderQueued = true;
+    return;
+  }
+  renderRunning = true;
+  try {
+    do {
+      renderQueued = false;
+      await renderOnce(source, forceRender);
+    } while (renderQueued && !isDragging);
+  } finally {
+    renderRunning = false;
+  }
+}
+
+// Render again after a drag ends, if a render was skipped during the drag.
+function renderAfterDragEnd(source) {
+  renderAfterDrag = false;
+  render(source);
+}
+
+async function renderOnce(source, forceRender) {
   renderCount++;
-  const scrollTop = document.documentElement.scrollTop || document.body.scrollTop;
 
   const { groupedTabs, ungroupedTabs, ghostTabs, groupMap, groupOrder } = await loadTabs();
 
@@ -2503,14 +2555,23 @@ async function render(source = 'unknown', forceRender = false) {
 
   // Fetch group types for all real groups
   const groupTypes = new Map();
-  await Promise.all(groupOrder.map(async (groupId) => {
+  if (groupOrder.length > 0) {
     try {
-      const resp = await safeSendMessage({ type: 'getGroupType', groupId });
-      groupTypes.set(groupId, resp?.groupType ?? 'none');
+      const resp = await safeSendMessage({ type: 'getGroupTypes', groupIds: groupOrder });
+      for (const groupId of groupOrder) {
+        groupTypes.set(groupId, resp?.groupTypes?.[groupId] ?? 'none');
+      }
     } catch {
-      groupTypes.set(groupId, 'none');
+      // Unknown types fall back to 'none' below
     }
-  }));
+  }
+
+  // A drag can start while the data loads. Do not change the DOM under it.
+  if (isDragging) {
+    renderAfterDrag = true;
+    return;
+  }
+  const scrollTop = document.documentElement.scrollTop || document.body.scrollTop;
 
   // Build combined list of all items with their first tab index for ordering
   const renderItems = [];
@@ -2577,6 +2638,10 @@ async function render(source = 'unknown', forceRender = false) {
   // Build map of existing group elements by data-group-id
   const existingGroups = new Map();
   for (const el of tabListEl.querySelectorAll(':scope > .tab-group')) {
+    if (existingGroups.has(el.dataset.groupId)) {
+      el.remove();
+      continue;
+    }
     existingGroups.set(el.dataset.groupId, el);
   }
 
@@ -2686,7 +2751,8 @@ async function render(source = 'unknown', forceRender = false) {
     pendingScrollToTabId = null;
     scrollToTab(scrollTarget);
   } else {
-    window.scrollTo(0, scrollTop);
+    const currentTop = document.documentElement.scrollTop || document.body.scrollTop;
+    if (currentTop !== scrollTop) window.scrollTo(0, scrollTop);
   }
 
   // Re-apply search filter after render
@@ -2913,16 +2979,24 @@ const RENDER_RELEVANT_KEYS = new Set([
   'title', 'url', 'favIconUrl', 'audible', 'mutedInfo',
   'groupId', 'pinned', 'discarded', 'attention'
 ]);
-chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   const keys = Object.keys(changeInfo);
   const relevant = keys.some(k => RENDER_RELEVANT_KEYS.has(k));
-  if (relevant) render('tabs.onUpdated');
+  const otherWindow = !allWindows && sidebarWindowId !== null && tab.windowId !== sidebarWindowId;
+  if (relevant && !otherWindow) render('tabs.onUpdated');
   if ('audible' in changeInfo) updatePlayingButtonState();
 });
 chrome.tabs.onMoved.addListener(() => render('tabs.onMoved'));
 chrome.tabs.onAttached.addListener(() => render('tabs.onAttached'));
 chrome.tabs.onDetached.addListener(() => render('tabs.onDetached'));
 chrome.tabs.onActivated.addListener((activeInfo) => {
+  if (sidebarWindowId !== null && activeInfo.windowId !== sidebarWindowId) {
+    // Another window: only its tab list can change, not this sidebar's focus
+    if (allWindows) render('tabs.onActivated');
+    return;
+  }
+  // One-shot scroll with no timer, so a slow render still scrolls to the tab
+  pendingScrollToTabId = activeInfo.tabId;
   setStickyScroll(activeInfo.tabId);
   render('tabs.onActivated');
 });
@@ -2931,7 +3005,9 @@ chrome.tabGroups.onRemoved.addListener(() => render('tabGroups.onRemoved'));
 chrome.tabGroups.onUpdated.addListener(() => render('tabGroups.onUpdated'));
 
 // Listen for YouTube progress updates
-chrome.runtime.onMessage.addListener((message) => {
+chrome.runtime.onMessage.addListener((message, sender) => {
+  // Only the service worker sends this update. Ignore content scripts.
+  if (sender.tab) return;
   if (message.type === 'youtubeProgressUpdate' && youtubeProgressEnabled) {
     const tabId = message.tabId;
     if (message.progress == null) {
