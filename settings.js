@@ -26,6 +26,7 @@ const modalCancel = document.getElementById('modal-cancel');
 const modalSave = document.getElementById('modal-save');
 const otherGroupNameInput = document.getElementById('other-group-name');
 const otherTabsSortingSelect = document.getElementById('other-tabs-sorting');
+const customGroupsFirstToggle = document.getElementById('custom-groups-first');
 const abbreviateCollapsedGroupsToggle = document.getElementById('abbreviate-collapsed-groups');
 const refreshBtn = document.getElementById('refresh-btn');
 const youtubeProgressToggle = document.getElementById('youtube-progress');
@@ -58,6 +59,7 @@ async function updateUI() {
   autoOrderingSeconds.value = settings.autoOrderingSeconds;
   otherGroupNameInput.value = settings.otherGroupName || 'Other';
   otherTabsSortingSelect.value = settings.otherTabsSorting || 'last';
+  customGroupsFirstToggle.checked = !!settings.customGroupsFirst;
   abbreviateCollapsedGroupsToggle.checked = !!settings.abbreviateCollapsedGroups;
   activeHighlightColor.value = settings.activeHighlightColor || DEFAULT_HIGHLIGHT_COLOR;
   customGroupingToggle.checked = settings.customGrouping;
@@ -270,6 +272,11 @@ otherGroupNameInput.addEventListener('input', () => {
 
 otherTabsSortingSelect.addEventListener('change', () => {
   settings.otherTabsSorting = otherTabsSortingSelect.value;
+  saveSettings();
+});
+
+customGroupsFirstToggle.addEventListener('change', () => {
+  settings.customGroupsFirst = customGroupsFirstToggle.checked;
   saveSettings();
 });
 

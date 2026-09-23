@@ -3,6 +3,7 @@ import { getDomain, getHostname, getShortName, shouldSkipUrl } from './lib/domai
 import { createLock } from './lib/lock.js';
 import { findAvailableColor } from './lib/colors.js';
 import { AUTO_ORDERING_CHECK_INTERVAL_MS } from './lib/constants.js';
+import { frontBlockEnd, orderedCustomGroupIds, planCustomGroupMoves } from './lib/ordering.js';
 import {
   loadAutoGroupIds,
   loadManualGroupIds,
@@ -135,7 +136,7 @@ async function scheduleBulkGrouping() {
     });
     const windows = await chrome.windows.getAll({ windowTypes: ['normal'] });
     for (const win of windows) {
-      scheduleOtherTabsSorting(win.id);
+      scheduleStripOrdering(win.id);
     }
   } finally {
     bulkPending = false;
@@ -802,11 +803,19 @@ const OTHER_SORT_DEBOUNCE_MS = 300;
 const pendingSortWindowIds = new Set();
 let otherSortTimer = null;
 
+// Custom groups go first only when custom grouping is on too.
+function customGroupsFirstActive() {
+  return !!settings.customGroupsFirst && !!settings.customGrouping
+    && (settings.customGroups || []).length > 0;
+}
+
 // Coalesce placement passes: tab moves fire more events, so a burst of
 // grouping activity should still settle into a single pass per window.
-function scheduleOtherTabsSorting(windowId) {
+// Each pass makes no calls when the strip is already in order, so the move
+// events it causes do not start another round of moves.
+function scheduleStripOrdering(windowId) {
   if (!windowId) return;
-  if ((settings.otherTabsSorting || 'last') === 'none') return;
+  if ((settings.otherTabsSorting || 'last') === 'none' && !customGroupsFirstActive()) return;
   pendingSortWindowIds.add(windowId);
   if (otherSortTimer) clearTimeout(otherSortTimer);
   otherSortTimer = setTimeout(() => {
@@ -815,16 +824,48 @@ function scheduleOtherTabsSorting(windowId) {
     pendingSortWindowIds.clear();
     withGroupingLock(async () => {
       for (const id of ids) {
-        await applyOtherTabsSorting(id);
+        const frontGroupIds = await applyCustomGroupsFirst(id);
+        // Skip the ungrouped tabs when a group move failed, because the
+        // front block is not in place.
+        if (frontGroupIds) await applyOtherTabsSorting(id, frontGroupIds);
       }
-    }).catch(err => console.error('[bg] other tabs sorting failed:', err));
+    }).catch(err => console.error('[bg] strip ordering failed:', err));
   }, OTHER_SORT_DEBOUNCE_MS);
+}
+
+// Move custom groups to the front of the tab strip, directly after the pinned
+// tabs, in the order of the custom groups list. Returns the IDs of the groups
+// at the front, so the ungrouped tabs can go after them, or null when a move
+// failed.
+async function applyCustomGroupsFirst(windowId) {
+  if (!customGroupsFirstActive()) return [];
+
+  let tabs, groups;
+  try {
+    tabs = await chrome.tabs.query({ windowId });
+    groups = await chrome.tabGroups.query({ windowId });
+  } catch {
+    return []; // Window closed
+  }
+
+  const groupIds = orderedCustomGroupIds(groups, tabs, settings.customGroups);
+  for (const { groupId, index } of planCustomGroupMoves(tabs, groupIds)) {
+    try {
+      await chrome.tabGroups.move(groupId, { index });
+    } catch {
+      // Group closed, or the user is dragging a tab. The next event
+      // schedules another pass.
+      return null;
+    }
+  }
+  return groupIds;
 }
 
 // Move ungrouped tabs to one end of the tab strip so they stop sitting between
 // groups. Pinned tabs never move, and tabs already in place are left alone so
-// we don't churn the strip on every event.
-async function applyOtherTabsSorting(windowId) {
+// we don't churn the strip on every event. With "first", the ungrouped tabs go
+// after the custom groups at the front.
+async function applyOtherTabsSorting(windowId, frontGroupIds = []) {
   const mode = settings.otherTabsSorting || 'last';
   if (mode === 'none') return;
 
@@ -840,8 +881,8 @@ async function applyOtherTabsSorting(windowId) {
     .sort((a, b) => a.index - b.index);
   if (loose.length === 0) return;
 
-  const pinnedCount = tabs.filter(t => t.pinned).length;
-  const target = mode === 'first' ? pinnedCount : tabs.length - loose.length;
+  const frontEnd = frontBlockEnd(tabs, frontGroupIds);
+  const target = mode === 'first' ? frontEnd : tabs.length - loose.length;
   if (loose.every((t, i) => t.index === target + i)) return;
 
   try {
@@ -1101,9 +1142,19 @@ bus.on('settings:abbreviateCollapsedGroups', async () => {
 bus.on('settings:otherTabsSorting', async () => {
   const windows = await chrome.windows.getAll({ windowTypes: ['normal'] });
   for (const win of windows) {
-    scheduleOtherTabsSorting(win.id);
+    scheduleStripOrdering(win.id);
   }
 });
+
+// The strip order depends on these settings, so re-order when one changes.
+for (const key of ['customGroupsFirst', 'customGrouping', 'customGroups']) {
+  bus.on(`settings:${key}`, async () => {
+    const windows = await chrome.windows.getAll({ windowTypes: ['normal'] });
+    for (const win of windows) {
+      scheduleStripOrdering(win.id);
+    }
+  });
+}
 
 bus.on('settings:autoGrouping', async (newValue) => {
   if (newValue) await scheduleBulkGrouping();
@@ -1121,7 +1172,7 @@ bus.on('settings:customGroups', async () => {
 
 // --- Tab Event Handlers ---
 bus.on('tab:created', (tab) => updateBadge(settings.allWindows ? undefined : tab.windowId));
-bus.on('tab:created', (tab) => scheduleOtherTabsSorting(tab.windowId));
+bus.on('tab:created', (tab) => scheduleStripOrdering(tab.windowId));
 bus.on('tab:created', (tab) => scheduleGroupAbbreviation(tab.windowId));
 bus.on('tab:removed', (tabId, removeInfo) => scheduleGroupAbbreviation(removeInfo.windowId));
 bus.on('tab:removed', (tabId, removeInfo) => updateBadge(settings.allWindows ? undefined : removeInfo.windowId));
@@ -1164,19 +1215,19 @@ bus.on('tab:updated', async (tabId, changeInfo, tab) => {
   if (changeInfo.status !== 'complete') return;
   if (shouldSkipUrl(tab.url)) return;
   scheduleSingleTabGrouping(tab.id);
-  scheduleOtherTabsSorting(tab.windowId);
+  scheduleStripOrdering(tab.windowId);
 });
 
 // A tab leaving a group (manually or when its group is removed) lands in the
 // middle of the strip, so re-place ungrouped tabs when the strip changes.
-bus.on('tab:moved', (tabId, moveInfo) => scheduleOtherTabsSorting(moveInfo.windowId));
-bus.on('tab:attached', (tabId, attachInfo) => scheduleOtherTabsSorting(attachInfo.newWindowId));
+bus.on('tab:moved', (tabId, moveInfo) => scheduleStripOrdering(moveInfo.windowId));
+bus.on('tab:attached', (tabId, attachInfo) => scheduleStripOrdering(attachInfo.newWindowId));
 bus.on('tab:attached', (tabId, attachInfo) => scheduleGroupAbbreviation(attachInfo.newWindowId));
 bus.on('tab:detached', (tabId, detachInfo) => scheduleGroupAbbreviation(detachInfo.oldWindowId));
 
 // --- Group Event Handlers ---
 bus.on('group:removed', async (group) => { await removeGroupId(group.id); });
-bus.on('group:removed', (group) => scheduleOtherTabsSorting(group.windowId));
+bus.on('group:removed', (group) => scheduleStripOrdering(group.windowId));
 bus.on('group:removed', async (group) => {
   if (group.id in groupFullTitles) {
     delete groupFullTitles[group.id];
@@ -1186,6 +1237,8 @@ bus.on('group:removed', async (group) => {
 bus.on('group:updated', (group) => {
   noteGroupRename(group);
   scheduleGroupAbbreviation(group.windowId);
+  // A new or renamed group can become a custom group.
+  if (customGroupsFirstActive()) scheduleStripOrdering(group.windowId);
 });
 
 // --- Wire Chrome events to bus ---
