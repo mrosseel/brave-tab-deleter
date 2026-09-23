@@ -38,7 +38,9 @@ FEATURES:
 
 - Abbreviate Collapsed Groups - Opt-in: shortens collapsed group titles only when the tab strip runs out of room, so more tabs stay visible
 
-- Active Tab Highlight - Pick your own accent color for the currently active tab
+- Active Tab Highlight - The active tab shows as a solid bar in an accent color you can pick. The text color adjusts so it stays easy to read
+
+- Custom Groups First - Opt-in: show your custom groups first, in the sidebar and in the tab strip
 
 - Tab Search - Click the search icon to filter tabs by title with wildcard support (use * as wildcard)
 
@@ -46,13 +48,13 @@ Works with Chrome and Brave browsers.
 
 ## Changelog
 
-### v1.8.0 (2026-07-31)
-- Move tabs, groups, and fused groups to another window from the right-click menu, with window letter labels (A, B, C...) showing where each tab lives
-- Add "Fuse same-named groups" setting to merge groups that share a name across windows
-- Close the sidebar from within via the header button
-- New "Other Tabs Sorting" setting keeps ungrouped tabs together at the end (or start) of the tab strip instead of scattered between groups
-- New opt-in setting abbreviates collapsed group titles, but only while the tab strip is out of room - collapsed groups keep their full name whenever they fit, and spell themselves out again when you widen the window
-- Pick a custom accent color for the active tab
-- Keep the active tab in view when switching tabs instead of snapping back to the previous scroll position
-- Fix YouTube progress bars going dead after the service worker hibernated: progress updates arriving during startup were dropped, and tabs were told to stop reporting until the sidebar was reopened
-- Keep YouTube progress running for every window while any sidebar is open in all-windows mode
+### v1.9.0 (2026-09-23)
+- New "Show custom groups first" setting puts your custom groups at the start of the sidebar and the tab strip
+- The active tab now shows as a solid bar in the accent color, with black or white text for contrast
+- Fix a tab sometimes showing in two groups, or in the wrong group, in the sidebar
+- Fix the sidebar sometimes not following when you switch tabs
+- Tab switches in other windows no longer move the sidebar
+- Group names in the right-click menus show as plain text
+- The extension ignores group and settings messages from web pages and other extensions
+- Faster sidebar updates with fewer messages to the background
+- Fix "No tab with id" errors in the background console when a tab closes
