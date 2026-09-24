@@ -1557,6 +1557,9 @@ function createTabElement(tab, groupInfo, onClose) {
       clearSelection();
       lastClickedTabId = tab.id;
       chrome.tabs.update(tab.id, { active: true });
+      if (tab.windowId !== undefined) {
+        chrome.windows.update(tab.windowId, { focused: true }).catch(() => {});
+      }
     }
   });
 
