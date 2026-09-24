@@ -64,6 +64,17 @@
         </button>
       </div>
     </div>
+    <div id="window-breakdown" class="header-count window-breakdown"></div>
+    <div class="header-duplicates" id="header-duplicates">
+      <span class="header-title">Duplicates</span>
+      <span id="duplicates-count" class="header-count"></span>
+      <button class="header-btn" id="duplicates-exit-btn" title="Back to all tabs">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M18 6L6 18"></path>
+          <path d="M6 6l12 12"></path>
+        </svg>
+      </button>
+    </div>
     <div class="header-search" id="header-search">
       <input type="text" id="search-input" placeholder="Search tabs..." autocomplete="off">
       <button class="header-btn" id="search-clear-btn" title="Clear search">
@@ -75,6 +86,7 @@
     </div>
   </header>
   <div id="tab-list"></div>
+  <div id="duplicates-list"></div>
 
   <!-- Context menu -->
   <div id="context-menu" class="context-menu">
@@ -93,6 +105,12 @@
       <div class="context-submenu" id="move-to-window-submenu"></div>
     </div>
     <div class="context-menu-item" data-action="ungroup" id="ungroup-option">Ungroup</div>
+  </div>
+
+  <!-- Sidebar header context menu -->
+  <div id="header-context-menu" class="context-menu">
+    <div class="context-menu-item" data-action="find-duplicates">Find duplicates</div>
+    <div class="context-menu-item" data-action="close-all-duplicates" id="close-all-duplicates-option">Close all duplicates</div>
   </div>
 
   <!-- Group header context menu -->

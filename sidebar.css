@@ -69,6 +69,77 @@ body {
   display: none;
 }
 
+/* Duplicates view: replaces the header row and the tab list */
+.header-duplicates {
+  display: none;
+  align-items: center;
+  gap: 6px;
+}
+
+.header-duplicates #duplicates-exit-btn {
+  margin-left: auto;
+}
+
+.sidebar-header.duplicates-mode .header-normal,
+.sidebar-header.duplicates-mode .window-breakdown {
+  display: none;
+}
+
+.sidebar-header.duplicates-mode .header-duplicates {
+  display: flex;
+}
+
+#duplicates-list {
+  display: none;
+}
+
+body.duplicates-mode #tab-list {
+  display: none;
+}
+
+body.duplicates-mode #duplicates-list {
+  display: block;
+}
+
+.duplicates-empty {
+  padding: 16px;
+  font-size: 13px;
+  color: var(--close-btn-color);
+}
+
+.duplicate-set-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background-color: var(--group-header-bg);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.duplicate-set-url {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.duplicate-close-extras {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: none;
+  color: var(--text-color);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.duplicate-close-extras:hover {
+  background-color: var(--hover-bg);
+}
+
 .sidebar-header.search-mode .header-search {
   display: flex;
 }
@@ -113,6 +184,43 @@ body {
   font-size: 13px;
   color: var(--close-btn-color);
   margin-left: 4px;
+}
+
+.window-breakdown {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 6px 0 0 28px;
+}
+
+.window-chip {
+  padding: 1px 6px;
+  border: none;
+  border-radius: 3px;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.4;
+  letter-spacing: 0.5px;
+  cursor: pointer;
+}
+
+.window-chip .window-chip-count {
+  font-weight: 400;
+  margin-left: 3px;
+}
+
+.window-breakdown.filtering .window-chip:not(.selected) {
+  opacity: 0.4;
+}
+
+.window-chip.selected {
+  box-shadow: 0 0 0 2px var(--text-color);
+}
+
+.window-breakdown:empty,
+.sidebar-header.search-mode .window-breakdown {
+  display: none;
 }
 
 .header-actions {
@@ -755,6 +863,10 @@ body {
   display: none;
 }
 
-.tab-group.search-hidden {
+.tab-item.window-hidden {
+  display: none;
+}
+
+.tab-group.filter-empty {
   display: none;
 }
