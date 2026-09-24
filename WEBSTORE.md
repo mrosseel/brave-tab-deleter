@@ -44,17 +44,15 @@ FEATURES:
 
 - Tab Search - Click the search icon to filter tabs by title with wildcard support (use * as wildcard)
 
+- Window Filter - In All Windows mode, chips below the header show the tab count of each window. Click a chip to show only the tabs of that window
+
+- Duplicate Tabs - Right-click the header to find tabs with the same URL, or to close all extra copies at once
+
 Works with Chrome and Brave browsers.
 
 ## Changelog
 
-### v1.9.0 (2026-09-23)
-- New "Show custom groups first" setting puts your custom groups at the start of the sidebar and the tab strip
-- The active tab now shows as a solid bar in the accent color, with black or white text for contrast
-- Fix a tab sometimes showing in two groups, or in the wrong group, in the sidebar
-- Fix the sidebar sometimes not following when you switch tabs
-- Tab switches in other windows no longer move the sidebar
-- Group names in the right-click menus show as plain text
-- The extension ignores group and settings messages from web pages and other extensions
-- Faster sidebar updates with fewer messages to the background
-- Fix "No tab with id" errors in the background console when a tab closes
+### v1.9.1 (2026-09-24)
+- New window chips below the header show the tab count of each window. Click a chip to show only the tabs of that window
+- New "Find duplicates" and "Close all duplicates" options in the header right-click menu
+- A click on a tab in another window now brings that window to the front
