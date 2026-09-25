@@ -369,7 +369,19 @@ closePanelBtn.addEventListener('click', () => {
 // Scroll to active tab button
 scrollToActiveBtn.addEventListener('click', async () => {
   const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (activeTab) scrollToTab(activeTab.id);
+  if (!activeTab) return;
+  // Expand a collapsed group through its own header click handler, so the
+  // group keeps its collapse state after the next render.
+  const tabEl = document.querySelector(`[data-tab-id="${activeTab.id}"]`);
+  if (tabEl?.classList.contains('window-hidden')) {
+    windowFilter = null;
+    applyWindowFilter();
+  }
+  const tabsContainer = tabEl?.closest('.group-tabs');
+  if (tabsContainer?.classList.contains('collapsed')) {
+    tabsContainer.closest('.tab-group')?.querySelector(':scope > .group-header')?.click();
+  }
+  scrollToTab(activeTab.id);
 });
 
 // Scroll to playing tab button — cycles through audible tabs in tab-bar order
@@ -742,7 +754,10 @@ async function moveTabsToWindow(tabIds, targetWindowId) {
       if (existing) {
         await chrome.tabs.group({ tabIds: bucket.tabIds, groupId: existing.id });
       } else {
-        const newGroupId = await chrome.tabs.group({ tabIds: bucket.tabIds });
+        const newGroupId = await chrome.tabs.group({
+          tabIds: bucket.tabIds,
+          createProperties: { windowId: targetWindowId },
+        });
         await chrome.tabGroups.update(newGroupId, { title: bucket.title, color: bucket.color });
         targetByTitle.set(bucket.title, { id: newGroupId, title: bucket.title, color: bucket.color });
       }
@@ -752,25 +767,30 @@ async function moveTabsToWindow(tabIds, targetWindowId) {
   }
 }
 
-// Resolve a fused drop: route tabs into the most appropriate sub-group.
-// If any dragged tab is already in one of the fused sub-groups, treat it as a
-// no-op (just intra-fused reorder). Otherwise move tabs to the largest
-// sub-group's window and join it.
-async function handleFusedDrop(fusedTitle, tabIds, draggedTabsInfo) {
+// Resolve a fused drop: route tabs into the sub-group of the tab next to the
+// drop point, or into the largest sub-group when there is no such tab. If all
+// dragged tabs are already in that sub-group, the drop is a no-op.
+async function handleFusedDrop(fusedTitle, tabIds, anchorTabId) {
   try {
     const allGroups = await chrome.tabGroups.query({});
     const subGroups = allGroups.filter((g) => g.title === fusedTitle);
     if (subGroups.length === 0) return;
 
-    const sourceGroupIds = new Set(draggedTabsInfo.map((t) => t.groupId));
-    const alreadyMember = subGroups.find((g) => sourceGroupIds.has(g.id));
-    if (alreadyMember) return; // intra-fused reorder; no cross-window move needed
+    let target = null;
+    if (anchorTabId) {
+      const anchorTab = await chrome.tabs.get(anchorTabId).catch(() => null);
+      target = subGroups.find((g) => g.id === anchorTab?.groupId) || null;
+    }
+    if (!target) {
+      const counts = await Promise.all(
+        subGroups.map(async (g) => ({ g, count: (await chrome.tabs.query({ groupId: g.id })).length }))
+      );
+      counts.sort((a, b) => b.count - a.count);
+      target = counts[0].g;
+    }
 
-    const counts = await Promise.all(
-      subGroups.map(async (g) => ({ g, count: (await chrome.tabs.query({ groupId: g.id })).length }))
-    );
-    counts.sort((a, b) => b.count - a.count);
-    const target = counts[0].g;
+    const tabs = await Promise.all(tabIds.map((id) => chrome.tabs.get(id)));
+    if (tabs.every((t) => t.groupId === target.id)) return;
 
     await chrome.tabs.move(tabIds, { windowId: target.windowId, index: -1 });
     await chrome.tabs.group({ tabIds, groupId: target.id });
@@ -941,7 +961,10 @@ async function moveFusedToWindow(title, targetWindowId) {
     } else {
       const color = subGroups[0].color;
       await chrome.tabs.move(allTabIds, { windowId: targetWindowId, index: -1 });
-      const newGroupId = await chrome.tabs.group({ tabIds: allTabIds });
+      const newGroupId = await chrome.tabs.group({
+        tabIds: allTabIds,
+        createProperties: { windowId: targetWindowId },
+      });
       await chrome.tabGroups.update(newGroupId, { title, color });
     }
   } catch (err) {
@@ -1496,6 +1519,23 @@ function getGroupColor(group) {
   return getColorHex(group.color);
 }
 
+// Close action for a tab in a group: when the group has 2 tabs at the time of
+// the close, the other tab becomes a ghost. The count comes from the DOM when
+// the close happens, because the group can gain or lose tabs after the tab
+// element is made. Skipped under fusion, where updateGroupMemberships makes
+// the sibling-aware call after the close fires.
+function ghostLastTabOnClose(tabId, groupInfo, positionIndex) {
+  return () => {
+    if (allWindows && fuseGroups) return;
+    const tabEl = document.querySelector(`.tab-item[data-tab-id="${tabId}"]`);
+    const siblings = [...(tabEl?.closest('.group-tabs')?.querySelectorAll(':scope > .tab-item[data-tab-id]') || [])];
+    if (siblings.length !== 2) return;
+    const otherTabId = parseInt(siblings.find((el) => el !== tabEl).dataset.tabId);
+    ghostGroups.set(otherTabId, createGhostEntry(groupInfo, positionIndex));
+    saveGhostGroups();
+  };
+}
+
 function createTabElement(tab, groupInfo, onClose) {
   const div = document.createElement('div');
   div.className = 'tab-item' + (isHighlightedTab(tab) ? ' active' : '');
@@ -1607,7 +1647,7 @@ function createTabElement(tab, groupInfo, onClose) {
           // intra-window positional moves since they don't apply.
           const isFusedTarget = typeof targetGroupId === 'string' && targetGroupId.startsWith('fused:');
           if (isFusedTarget) {
-            await handleFusedDrop(targetGroupId.slice('fused:'.length), sortedIds, draggedTabs);
+            await handleFusedDrop(targetGroupId.slice('fused:'.length), sortedIds, anchorNextId || anchorPrevId);
           } else {
           // Move tabs one at a time, adjusting for index shifts
           for (const tabId of sortedIds) {
@@ -1643,7 +1683,8 @@ function createTabElement(tab, groupInfo, onClose) {
             const ghost = ghostGroups.get(ghostTabId);
             if (ghost) {
               const tabIds = [ghostTabId, ...sortedIds];
-              const newGroupId = await chrome.tabs.group({ tabIds });
+              const { windowId } = await chrome.tabs.get(ghostTabId);
+              const newGroupId = await chrome.tabs.group({ tabIds, createProperties: { windowId } });
               await chrome.tabGroups.update(newGroupId, {
                 title: ghost.title,
                 color: ghost.color
@@ -1907,7 +1948,7 @@ async function commitGroupMove(numericGroupId) {
         try {
           await chrome.tabs.group({ tabIds, groupId: numericGroupId });
         } catch (e) {
-          const newGroupId = await chrome.tabs.group({ tabIds });
+          const newGroupId = await chrome.tabs.group({ tabIds, createProperties: { windowId } });
           await chrome.tabGroups.update(newGroupId, {
             title: draggedGroup.title,
             color: draggedGroup.color
@@ -2258,18 +2299,8 @@ function createTabsContainer(tabs, groupInfo, isGhost, isUngrouped, positionInde
   tabs.forEach(tab => {
     let onClose = null;
 
-    // Skip the eager 2→1 ghost when fusion is on — updateGroupMemberships
-    // makes the correct sibling-aware call after the close fires.
-    const skipEagerGhost = allWindows && fuseGroups;
-    if (!isUngrouped && !isGhost && tabs.length === 2 && groupInfo && !skipEagerGhost) {
-      const otherTab = tabs.find(t => t.id !== tab.id);
-      if (otherTab) {
-        onClose = () => {
-          console.log('[sidebar] onClose: Creating ghost for tab', otherTab.id, 'group:', groupInfo.title);
-          ghostGroups.set(otherTab.id, createGhostEntry(groupInfo, positionIndex));
-          saveGhostGroups();
-        };
-      }
+    if (!isUngrouped && !isGhost && groupInfo) {
+      onClose = ghostLastTabOnClose(tab.id, groupInfo, positionIndex);
     }
 
     tabsContainer.appendChild(createTabElement(tab, isGhost ? groupInfo : null, onClose));
@@ -2735,17 +2766,9 @@ function diffGroupTabs(tabsContainer, newTabs, groupInfo, isGhost, isUngrouped, 
     if (el) {
       updateTabElement(el, tab);
     } else {
-      // Build onClose for 2-tab groups (skipped under fusion — updateGroupMemberships handles it)
       let onClose = null;
-      const skipEagerGhost = allWindows && fuseGroups;
-      if (!isUngrouped && !isGhost && newTabs.length === 2 && groupInfo && !skipEagerGhost) {
-        const otherTab = newTabs.find(t => t.id !== tab.id);
-        if (otherTab) {
-          onClose = () => {
-            ghostGroups.set(otherTab.id, createGhostEntry(groupInfo, positionIndex));
-            saveGhostGroups();
-          };
-        }
+      if (!isUngrouped && !isGhost && groupInfo) {
+        onClose = ghostLastTabOnClose(tab.id, groupInfo, positionIndex);
       }
       el = createTabElement(tab, isGhost ? groupInfo : null, onClose);
     }

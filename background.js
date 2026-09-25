@@ -666,7 +666,10 @@ async function groupSingleTab(tab) {
     if (existingHere) {
       await chrome.tabs.group({ tabIds: latest.id, groupId: existingHere.id });
     } else {
-      const newGroupId = await chrome.tabs.group({ tabIds: latest.id });
+      const newGroupId = await chrome.tabs.group({
+        tabIds: latest.id,
+        createProperties: { windowId: latest.windowId },
+      });
       await chrome.tabGroups.update(newGroupId, { title: otherGroup.title, color: otherGroup.color });
     }
   }
